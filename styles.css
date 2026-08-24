@@ -236,7 +236,10 @@ table.grid td.tcell {
 /* ---- 管理モード (§14) ---- */
 /* 参加者に端末を渡したときに気づけるよう、地の色を変えて明示する。 */
 body.admin .hd { background: #eef1f7; border-bottom-color: var(--edge); }
+/* hidden 属性は UA の display:none だが、.hd-row の display:flex の方が
+   詳細度で勝ってしまう。明示的に打ち消す（.overlay[hidden] と同じ理由）。 */
 .admin-bar { margin-top: 8px; }
+.admin-bar[hidden] { display: none; }
 .badge {
   font: inherit; font-size: 12px; letter-spacing: .06em; cursor: pointer;
   background: var(--edge); color: #fff;
