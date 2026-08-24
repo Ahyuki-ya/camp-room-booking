@@ -6,7 +6,7 @@
 //    同じホストを書く必要がある。2箇所とも書き換えること。
 // =====================================================================
 window.CONFIG = {
-  SUPABASE_URL: 'https://YOUR-PROJECT-REF.supabase.co',
-  SUPABASE_ANON_KEY: 'YOUR-ANON-KEY',
+  SUPABASE_URL: 'https://zdborpxhbggshicyoaoj.supabase.co',
+  SUPABASE_ANON_KEY: 'sb_publishable_BjN-s5B2z1HUiFB2yxSr_w_Aem3tAaT',
   CAMP_NAME: 'サークル合宿 2026',
 };

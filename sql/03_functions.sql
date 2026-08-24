@@ -18,7 +18,7 @@ create or replace function create_reservation(
 ) returns uuid
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions  -- pgcrypto が extensions にあるため（§8）
 as $$
 declare
   v_group_name   text;
@@ -103,7 +103,7 @@ create or replace function cancel_reservation(
 ) returns boolean
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions  -- pgcrypto が extensions にあるため（§8）
 as $$
 declare
   v_start_at timestamptz;

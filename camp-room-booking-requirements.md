@@ -136,7 +136,7 @@
 ## 6. データモデル（Supabase / PostgreSQL）
 
 ```sql
-create extension if not exists pgcrypto;
+create extension if not exists pgcrypto;  -- Supabase では extensions スキーマに導入済みのため実質 no-op
 
 -- 部屋マスタ
 create table rooms (
@@ -279,7 +279,9 @@ form-action 'none'
 
 ## 8. API（RPC）
 
-クライアントは以下の2関数のみを書き込みに使う。いずれも `security definer` かつ `set search_path = public`。
+クライアントは以下の2関数のみを書き込みに使う。いずれも `security definer` かつ `set search_path = public, extensions`。
+
+> **`extensions` を含める理由**（2026-08-24 追記）：Supabase は `pgcrypto` を `public` ではなく `extensions` スキーマに事前導入している（実プロジェクト `camp-room-booking` / PG 17.6 で確認）。`search_path` を `public` だけに固定すると `create_reservation` 内の `crypt()` / `gen_salt()` が解決できず**実行時に**失敗する。plpgsql の関数本体は作成時に検証されないため、SQL の投入自体は成功し、参加者が実際に予約を押したときだけ落ちるという発覚の遅い壊れ方をする。`public` を先頭に保ったまま `extensions` を追記すること。
 
 ### 8.1 エラー返却の規約
 
@@ -447,6 +449,20 @@ tools/devserver.py      ローカルPG に対する PostgREST 互換ミニサー
 - `config.js` の値は公開前提のためリポジトリにコミットしてよい。
 - SQLは `01` → `04` の順に Supabase SQL Editor で実行する。
 
+### 11.4 実環境の値（2026-08-24 構築）
+
+| 項目 | 値 |
+|---|---|
+| GitHub リポジトリ | `Ahyuki-ya/camp-room-booking`（public） |
+| 公開URL | https://ahyuki-ya.github.io/camp-room-booking/ |
+| Supabase 組織 | `yukidaruma.daisuki@gmail.com's Org`（個人アカウント） |
+| Supabase プロジェクト | `camp-room-booking` / ref `zdborpxhbggshicyoaoj` |
+| リージョン | `ap-northeast-1`（東京） |
+| PostgreSQL | 17.6 |
+| 使用する公開鍵 | **publishable key**（`sb_publishable_...`）。legacy の anon JWT も発行されているが、Supabase が legacy 鍵を段階的に廃止する方針のため新形式を採用した。どちらも動作することは実測済み |
+
+DB パスワードと Management API のトークンは `.env.local`（gitignore 済み）に置く。リポジトリには含めない。
+
 ### 11.2 seed.sql
 
 日程を1箇所で変更できるようにする。
@@ -501,12 +517,23 @@ from (values ('2026-09-01'::date), ('2026-09-02'::date)) as s(d),
 
 `sql/test_acceptance.sh` により、DBで検証できる項目は**ローカルの PostgreSQL 18.4 上で全21アサーションが通過済み**。ブラウザ実機（375px 幅）での画面確認も実施し、基準7・8とエラー表示の全経路を確認済み。
 
-**未検証で、Supabase 上で必ず確認すべき項目**:
+#### Supabase 実環境での確認結果（2026-08-24）
+
+プロジェクト `camp-room-booking`（PG 17.6 / ap-northeast-1）に対して確認した。
+
+| 項目 | 結果 |
+|---|---|
+| `normalize(..., NFKC)` 生成列 | ✅ **PG 17.6 で問題なく作成できた。** `lower(btrim(...))` へのフォールバックは不要。`' Ａチーム '` → `'aチーム'` への正規化も実測で確認 |
+| `Date` レスポンスヘッダの露出 | ✅ **`access-control-expose-headers` に `Date` が含まれる**ことを実測で確認。FR-06 のサーバ時刻同期は動作する。端末時計への縮退は発生しない |
+| `pgcrypto` のスキーマ | ⚠️ **`public` ではなく `extensions` にあった。** そのため §8 のとおり関数の `search_path` に `extensions` を追加した。この修正がないと予約作成が実行時に失敗する |
+| RPC 経由の予約作成・キャンセル | ✅ anon 相当の publishable key で `create_reservation` / `cancel_reservation` の正常系・`INVALID_PIN`・`DUPLICATE_IN_SLOT` を実測で確認 |
+| `reservation_secrets` の秘匿 | ✅ DB に行が存在する状態で anon から `GET /rest/v1/reservation_secrets` を叩き、`[]` が返ることを確認（RLS による遮断であることを、管理者権限での行数照会と突き合わせて確定） |
+| `reservations` への直接 INSERT | ✅ anon からの直接 INSERT は HTTP 401 / `42501` で拒否されることを確認 |
+
+**引き続き未検証の項目**:
 
 | 項目 | 理由 |
 |---|---|
-| `normalize(..., NFKC)` 生成列 | ローカルは PG18。Supabase の PG バージョン（15/17）で通ることを確認する |
-| `Date` レスポンスヘッダの露出 | FR-06 のサーバ時刻同期が依存する。読めない場合の縮退動作は実装済み |
 | 基準8（iPhone実機 Safari） | ブラウザのモバイルエミュレーションでの確認に留まる |
 | 基準9（端末TZを変えても表示が一致） | `Intl` に `timeZone` を明示済みだが実機で確認する |
 
