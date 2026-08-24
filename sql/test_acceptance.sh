@@ -34,35 +34,35 @@ r=$(call "select create_reservation(1::smallint,'$PAST'::timestamptz,'過去テ�
 echo
 echo "== 基準2/13/14: 枠数上限（1セッション2枠）と正規化とセッション境界 =="
 $PSQL -c "delete from reservations;" >/dev/null
-a=$(call "select create_reservation(1::smallint,'2026-09-01 22:00+09'::timestamptz,'Aチーム','1111');")
-b=$(call "select create_reservation(2::smallint,'2026-09-02 01:00+09'::timestamptz,'Ａチーム','1111');")
-c=$(call "select create_reservation(3::smallint,'2026-09-02 03:00+09'::timestamptz,'aチーム','1111');")
-[ ${#a} -eq 36 ] && ok "1枠目(Aチーム 9/1 22:00) 作成成功" || ng "1枠目" "$a"
-[ ${#b} -eq 36 ] && ok "2枠目(Ａチーム 9/2 01:00) 作成成功 = 全角Aが同一グループ扱い" || ng "2枠目" "$b"
-[ "$c" = "LIMIT_EXCEEDED" ] && ok "基準2/13/14: 3枠目が LIMIT_EXCEEDED（9/1 22:00 と 9/2 03:00 が同一セッション）" || ng "3枠目" "$c"
+a=$(call "select create_reservation(1::smallint,'2026-09-02 22:00+09'::timestamptz,'Aチーム','1111');")
+b=$(call "select create_reservation(2::smallint,'2026-09-03 01:00+09'::timestamptz,'Ａチーム','1111');")
+c=$(call "select create_reservation(3::smallint,'2026-09-03 03:00+09'::timestamptz,'aチーム','1111');")
+[ ${#a} -eq 36 ] && ok "1枠目(Aチーム 9/2 22:00) 作成成功" || ng "1枠目" "$a"
+[ ${#b} -eq 36 ] && ok "2枠目(Ａチーム 9/3 01:00) 作成成功 = 全角Aが同一グループ扱い" || ng "2枠目" "$b"
+[ "$c" = "LIMIT_EXCEEDED" ] && ok "基準2/13/14: 3枠目が LIMIT_EXCEEDED（9/2 22:00 と 9/3 03:00 が同一セッション）" || ng "3枠目" "$c"
 n=$($PSQL -c "select count(distinct group_key) from reservations;")
 [ "$n" = "1" ] && ok "基準13: 3つの表記が単一の group_key に統合されている" || ng "group_key" "distinct=$n"
 
 echo
-echo "== 基準14の裏: 別セッション(9/2の晩)なら取れる =="
-d=$(call "select create_reservation(1::smallint,'2026-09-02 22:00+09'::timestamptz,'Aチーム','1111');")
-[ ${#d} -eq 36 ] && ok "9/2の晩は別枠として作成できる" || ng "別セッション" "$d"
+echo "== 基準14の裏: 別セッション(9/3の晩)なら取れる =="
+d=$(call "select create_reservation(1::smallint,'2026-09-03 22:00+09'::timestamptz,'Aチーム','1111');")
+[ ${#d} -eq 36 ] && ok "9/3の晩は別枠として作成できる" || ng "別セッション" "$d"
 
 echo
 echo "== 基準3: 同一グループ同一スロットの別部屋は DUPLICATE_IN_SLOT =="
 $PSQL -c "delete from reservations;" >/dev/null
-call "select create_reservation(1::smallint,'2026-09-01 22:00+09'::timestamptz,'Bチーム','2222');" >/dev/null
-r=$(call "select create_reservation(2::smallint,'2026-09-01 22:00+09'::timestamptz,'Bチーム','2222');")
+call "select create_reservation(1::smallint,'2026-09-02 22:00+09'::timestamptz,'Bチーム','2222');" >/dev/null
+r=$(call "select create_reservation(2::smallint,'2026-09-02 22:00+09'::timestamptz,'Bチーム','2222');")
 [ "$r" = "DUPLICATE_IN_SLOT" ] && ok "DUPLICATE_IN_SLOT（SLOT_TAKEN と正しく区別されている）" || ng "DUPLICATE_IN_SLOT" "$r"
 
 echo
 echo "== 基準1: 同一セルへの同時予約は片方だけ成功 =="
 $PSQL -c "delete from reservations;" >/dev/null
 for i in 1 2 3 4 5; do
-  ( $PSQL -c "select create_reservation(1::smallint,'2026-09-01 23:00+09'::timestamptz,'同時${i}','333${i}');" >/dev/null 2>&1 ) &
+  ( $PSQL -c "select create_reservation(1::smallint,'2026-09-02 23:00+09'::timestamptz,'同時${i}','333${i}');" >/dev/null 2>&1 ) &
 done
 wait
-n=$($PSQL -c "select count(*) from reservations where room_id=1 and start_at='2026-09-01 23:00+09';")
+n=$($PSQL -c "select count(*) from reservations where room_id=1 and start_at='2026-09-02 23:00+09';")
 [ "$n" = "1" ] && ok "5並列で成功したのは1件のみ" || ng "同時予約" "成功=$n件"
 
 echo
@@ -73,14 +73,14 @@ echo "== 基準12: 同一グループの同時送信でも1セッション2枠�
 # ロックが無くてもテストが通ってしまう（＝無意味なテストになる）。
 $PSQL -c "delete from reservations;" >/dev/null
 T=$($PSQL -c "select (clock_timestamp() + interval '3 seconds')::text;")
-SLOTS=$($PSQL -c "select string_agg(start_at::text,'|') from (select start_at from slots where session_date='2026-09-01' order by start_at limit 8) t;")
+SLOTS=$($PSQL -c "select string_agg(start_at::text,'|') from (select start_at from slots where session_date='2026-09-02' order by start_at limit 8) t;")
 OLDIFS=$IFS; IFS='|'; read -ra ARR <<< "$SLOTS"; IFS=$OLDIFS
 for s in "${ARR[@]}"; do
   ( $PSQL -c "select pg_sleep(greatest(0, extract(epoch from ('$T'::timestamptz - clock_timestamp()))));
               select create_reservation(1::smallint,'$s'::timestamptz,'限界チーム','4444');" >/dev/null 2>&1 ) &
 done
 wait
-n=$($PSQL -c "select count(*) from reservations where group_key='限界チーム' and session_date='2026-09-01';")
+n=$($PSQL -c "select count(*) from reservations where group_key='限界チーム' and session_date='2026-09-02';")
 [ "$n" = "2" ] && ok "8並列同時発火でも保有枠はちょうど2枠（ロックを外すと8枠取れることを対照実験で確認済み）" || ng "advisory lock" "${n}枠"
 
 echo
@@ -114,7 +114,7 @@ after=$($PSQL -c "select count(*) from reservations;")
 tampered=$($PSQL -c "select count(*) from reservations where group_name='侵入済み';")
 [ "$before" = "$after" ] && ok "基準5: anon の delete で件数が変わらない（$before 件のまま）" || ng "anon delete" "$before -> $after"
 [ "$tampered" = "0" ] && ok "基準5: anon の update で書き換えられた行が0件" || ng "anon update" "$tampered 件書き換えられた"
-r=$($PSQL -c "set role anon; insert into reservations (room_id,start_at,session_date,group_name) values (1,'2026-09-01 22:00+09','2026-09-01','侵入');" 2>&1 | head -1)
+r=$($PSQL -c "set role anon; insert into reservations (room_id,start_at,session_date,group_name) values (1,'2026-09-02 22:00+09','2026-09-02','侵入');" 2>&1 | head -1)
 case "$r" in
   *"row-level security"*|*"permission denied"*) ok "基準5: anon の insert は RLS エラーで拒否" ;;
   *) ng "anon insert" "$r" ;;
