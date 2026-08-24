@@ -97,6 +97,15 @@
 - 判定はグループ名の**正規化キー**（`group_key`）で行う。正規化は「前後空白の除去 → Unicode NFKC 正規化 → 小文字化」の順で行い、大文字小文字・全角半角・半角カナの表記揺れを同一グループとみなす（「Aチーム」「Ａチーム」「aチーム」は同一）。
 - **同時実行下でも上限を超えてはならない**（実現方法は第8章、検証は第12章-12）。
 
+**端末単位の上限（2026-08-24 追加）**
+
+- 1つの端末から取れる予約も **1セッション（1晩）あたり最大2枠**とする。グループ名による上限とは**独立に、両方が同時に適用される**。別のグループ名を名乗っても、同じ端末からはその晩3枠目を取れない。
+- 単位はセッションであり暦日ではない。§2 のとおり暦日で数えると 22:00 と 01:00 が別日になり、1晩で実質4枠になってしまう。
+- 端末の識別は、初回アクセス時に生成して `localStorage` に保存する UUID で行う。
+- **この上限に強制力はない。** `localStorage` の消去・プライベートブラウズ・別ブラウザ・別端末のいずれでも回避できる。「うっかり取りすぎ」と「軽い気持ちの取りすぎ」を止める柵であって、認証の代替ではない（§7 の受容リスク参照）。強制力を求めるなら認証が必要だが、それは §1 でスコープ外と決めている。
+- **IPアドレスによる識別を採用してはならない。** 合宿所のWiFiはNATで参加者全員が同一のグローバルIPになるため、最初の2枠で全員がブロックされる。携帯回線のCGNATでも同じ事故が起きる。
+- `localStorage` が使えない環境では端末IDを永続化できない。その場合もエラーにせず、その場限りのIDで動作を続ける。上限は実質無効になるが、柵である以上それを許容する。
+
 ### FR-05 スロット定義
 - 予約可能な日時の集合は `slots` テーブルで定義する。フロントエンドにハードコードしない。
 - 各スロット行は `session_date` を持ち、どの晩に属するかを保持する。
@@ -184,6 +193,16 @@ create table reservation_secrets (
   reservation_id uuid primary key references reservations(id) on delete cascade,
   pin_hash       text not null
 );
+
+-- 端末ごとの枠数を数えるための対応表（FR-04）。
+-- anon からは読めない。session_date は数える側の都合で非正規化して持つ。
+create table reservation_devices (
+  reservation_id uuid primary key references reservations(id) on delete cascade,
+  device_id      uuid not null,
+  session_date   date not null
+);
+
+create index ix_resdev_device_session on reservation_devices (device_id, session_date);
 ```
 
 ### 設計意図（変更してはならない点）
@@ -191,6 +210,7 @@ create table reservation_secrets (
 1. **PINハッシュの分離**：フロントエンドが `select *` を書いてもハッシュが漏れない構造にするため。この分離は変更しないこと。
 2. **`session_date` の複合外部キー**：予約の `session_date` が `slots` の定義と食い違う可能性をアプリ層ではなくDB制約で排除する。単独の `start_at` FK では session_date の正しさを保証できない。
 3. **`group_key` 生成列**：正規化ルールをDBに1箇所だけ持たせる。フロントとRPCで正規化ロジックが二重管理されると、必ずどちらかがずれる。
+4. **`device_id` を `reservations` に持たせない**：`reservations` は anon が自由に SELECT できる。同じ表に `device_id` を置くと「どの予約が同一端末から取られたか」を誰でも突き合わせられ、匿名運用の前提が崩れる。PINハッシュと同じ理由で別表に分離する。
 
 ### 実装時の最初の検証タスク
 
@@ -209,13 +229,14 @@ alter table rooms                enable row level security;
 alter table slots                enable row level security;
 alter table reservations         enable row level security;
 alter table reservation_secrets  enable row level security;
+alter table reservation_devices  enable row level security;
 
 -- 読み取りのみ許可
 create policy p_rooms_select on rooms        for select to anon using (true);
 create policy p_slots_select on slots        for select to anon using (true);
 create policy p_res_select   on reservations for select to anon using (true);
 
--- reservation_secrets にはポリシーを一切作らない（= anon からアクセス不可）
+-- reservation_secrets と reservation_devices にはポリシーを一切作らない（= anon からアクセス不可）
 -- reservations への INSERT / UPDATE / DELETE ポリシーも作らない（= RPC 経由のみ）
 ```
 
@@ -270,7 +291,7 @@ form-action 'none'
 
 | リスク | 判断 |
 |---|---|
-| 参加者が偽のグループ名を次々に使って枠を占拠する | レート制限は実装しない（無料プランでの実装が困難）。抑止は「1晩2枠の上限」と「主催者がダッシュボードから削除できること」に依存する。 |
+| 参加者が偽のグループ名を次々に使って枠を占拠する | レート制限は実装しない（無料プランでの実装が困難）。抑止は「1晩2枠の上限」「**端末ごとの1晩2枠の上限**（FR-04、2026-08-24 追加）」「主催者がダッシュボードから削除できること」に依存する。端末上限は `localStorage` の消去等で回避できるため、決定的な対策ではない。 |
 | 4桁PINの総当たり | `pg_sleep(0.5)` のみで許容する（7.4-4）。 |
 | クリックジャッキング | GitHub Pages で `frame-ancestors` を設定できないため受容する。 |
 | 他人のグループ名を騙った予約 | 認証を行わない設計上、防止できない。主催者が手動で修正する。 |
@@ -302,7 +323,8 @@ create_reservation(
   p_room_id    smallint,
   p_start_at   timestamptz,
   p_group_name text,
-  p_pin        text
+  p_pin        text,
+  p_device_id  uuid default null   -- FR-04 端末上限。既定値ありは意図的（後述）
 ) returns uuid
 ```
 
@@ -313,14 +335,20 @@ create_reservation(
 3. `slots` から `p_start_at` の行を取得し `session_date` を得る。行がなければ `NO_SUCH_SLOT` を raise
 4. **`p_start_at <= now()` なら `PAST_SLOT` を raise**（FR-01のグレーアウトはUI上の便宜にすぎず、サーバ側の検証を省略してはならない）
 5. 正規化キー `v_group_key := lower(normalize(btrim(p_group_name), NFKC))` を算出する。**生成列 `group_key` と同一の式でなければならない**
-6. **`perform pg_advisory_xact_lock(1, hashtext(v_group_key));`** を実行する
+6. **`perform pg_advisory_xact_lock(1, hashtext(v_group_key));`** を実行する。続けて `p_device_id` が null でなければ **`perform pg_advisory_xact_lock(2, hashtext(p_device_id::text));`** を実行する。**グループ → 端末というこの順序を入れ替えてはならない**（理由は後述）
 7. `reservations` を `group_key = v_group_key and session_date = <手順3の値>` で数え、2以上なら `LIMIT_EXCEEDED` を raise
+7b. `p_device_id` が null でなければ、`reservation_devices` を `device_id = p_device_id and session_date = <手順3の値>` で数え、2以上なら `DEVICE_LIMIT_EXCEEDED` を raise
 8. `reservations` に insert（`group_name` はトリム済みの値。`group_key` は生成列なので指定しない）。例外を捕捉して分岐する
    - `unique_violation` → `get stacked diagnostics` で制約名を取得し、`uq_group_slot` なら `DUPLICATE_IN_SLOT`、それ以外（`uq_room_slot`）なら `SLOT_TAKEN` を raise
    - `foreign_key_violation` → `NO_SUCH_ROOM` を raise（存在しない `room_id` を送られた場合）
 9. `reservation_secrets` に `crypt(p_pin, gen_salt('bf'))` を insert
+10. `p_device_id` が null でなければ `reservation_devices` に insert する
 
 **手順6が本設計の要**。これがないと「数える → insert」の間に別トランザクションが割り込み、同一グループが同時送信で3枠目・4枠目を取得できてしまう（§5 の枠数上限要件を満たさなくなる）。advisory lock は**同一グループ名のリクエスト同士のみを直列化**し、無関係なグループはブロックしない。`hashtext` が衝突した場合の実害は「無関係な2グループが一瞬待たされる」ことだけである。ロックはトランザクション終了時に自動解放されるため、明示的な解放は不要。
+
+**手順6でロックの取得順序を固定する理由**：1つのトランザクションが2種類のロックを取るため、順序がばらつくとデッドロックしうる。「必ずグループを先、端末を後」に固定すると、端末ロックを待っているトランザクションは必ずグループロックを保持済みであり、その逆（グループロックを待ちながら端末ロックを保持する）が発生しない。待ちの向きが一方向に揃うため循環が作れず、デッドロックは原理的に起きない。なお classid をグループ = 1、端末 = 2 と分けているので、両者のハッシュ値がたまたま一致しても互いに干渉しない。
+
+**`p_device_id` に既定値 `null` を置く理由**：GitHub Pages は JS をキャッシュするため、DB を更新した直後は端末IDを送らない古い `app.js` がしばらく残る。引数を必須にすると PostgREST が関数を解決できず、その間の予約がすべて失敗する。既定値を置けば古いクライアントも動き続け、端末上限だけが適用されない状態で済む。「端末IDを送らなければ上限を回避できる」ことになるが、そもそも端末IDは利用者が自由に詐称できる柵であり（FR-04）、この抜け道で失うものはない。
 
 **手順9で制約名による分岐が必要な理由**：`uq_group_slot`（同一グループが同一スロットで2部屋）と `uq_room_slot`（他グループに先を越された）はどちらも `unique_violation` になる。区別せずに `SLOT_TAKEN` を返すと、自分が既に同じ時間帯に別の部屋を取っているだけなのに「他のグループが予約しました」と表示され、参加者が混乱する。
 
@@ -403,7 +431,8 @@ grant execute on function cancel_reservation(uuid, text) to anon;
 |---|---|---|---|
 | `SLOT_TAKEN` | 同時操作で他グループに先を越された | 「この枠は他のグループが予約しました」 | グリッドを即再取得 |
 | `DUPLICATE_IN_SLOT` | 同じ時間帯に自グループが別の部屋を予約済み | 「同じ時間帯にすでに別の部屋を予約しています」 | グリッドを即再取得 |
-| `LIMIT_EXCEEDED` | 枠数上限の超過 | 「1グループの予約は**その晩あたり**最大2枠までです。既存の予約をキャンセルしてください」 | — |
+| `LIMIT_EXCEEDED` | グループ名基準の枠数上限の超過 | 「1グループの予約は**その晩あたり**最大2枠までです。既存の予約をキャンセルしてください」 | — |
+| `DEVICE_LIMIT_EXCEEDED` | 端末基準の枠数上限の超過（FR-04） | 「この端末からの予約は**その晩あたり**最大2枠までです。既存の予約をキャンセルしてください」 | — |
 | `PAST_SLOT` | 開始済みスロットへの予約 | 「この時間帯はすでに開始しています」 | グリッドを即再取得 |
 | `NO_SUCH_SLOT` | 予約対象外の日時 | 「この時間帯は予約対象外です」 | グリッドを即再取得 |
 | `TOO_LATE` | 開始30分前を過ぎたキャンセル | 「開始30分前を過ぎたためキャンセルできません」 | グリッドを即再取得 |
@@ -513,6 +542,8 @@ from (values ('2026-09-02'::date), ('2026-09-03'::date)) as s(d),
 13. **「Aチーム」と「Ａチーム」が同一グループとして枠数上限に合算される。**
 14. **9/2 22:00 と 9/3 01:00 が同一セッションとして上限にカウントされる**（暦日で分割されないこと）。
 15. **外部CDNへのリクエストが1件も発生しない**（DevTools の Network タブで、自オリジンと Supabase 以外への通信がゼロであること）。
+16. **同一端末から、異なるグループ名を使ってその晩3枠目を取ろうとすると `DEVICE_LIMIT_EXCEEDED` で拒否される**（FR-04 の端末上限。グループ名上限とは独立に効くこと）。
+17. **`localStorage` を消去してから予約すると、端末上限がリセットされて再び2枠取れる**（回避可能であることを仕様として確認する。これは不具合ではない）。
 
 ---
 
@@ -536,6 +567,10 @@ from (values ('2026-09-02'::date), ('2026-09-03'::date)) as s(d),
 | 基準5（anon の直接 DELETE / UPDATE） | ✅ 1行も変化しないことを確認。ただし **PostgREST は HTTP 204 を返す**（RLS で対象行が見えず空振りするため）。エラーにはならないが実害はない |
 | `NO_SUCH_SLOT` | ✅ slots に存在しない時刻を指定すると `NO_SUCH_SLOT` が返ることを確認 |
 | UI からの予約・キャンセル（GitHub Pages 本番） | ✅ 公開URL上でセルのタップ→予約→誤PINで「PINが違います」→正PINでキャンセル、の全経路を実測。コンソールエラーなし、CSP 違反なし |
+| 基準16（端末上限） | ✅ 同一端末から別々のグループ名で3枠目を取ろうとすると `DEVICE_LIMIT_EXCEEDED`。別端末なら同じ枠を取れることも確認 |
+| グループ名上限と端末上限の独立性 | ✅ 新しい端末からでも同じグループ名の3枠目は `LIMIT_EXCEEDED`。両者が独立に適用されることを確認 |
+| 端末IDを送らない旧クライアント | ✅ `p_device_id` を省略しても予約が成功する（既定値 `null` による後方互換）|
+| `reservation_devices` の秘匿 | ✅ 3行存在する状態で anon から読んで `[]` |
 | `PAST_SLOT` / `TOO_LATE` | ⏸ 時刻依存のため本番では未実施（過去スロットや30分以内のスロットを本番に挿入する必要があるため）。ローカルの `test_acceptance.sh` で検証済み |
 
 **引き続き未検証の項目**:
@@ -565,6 +600,7 @@ v1 で `【要確認】` としていた項目は、2026-08-23 にすべて確�
 | 8 | メモ機能 | **廃止**（列・制約・引数・表示をすべて削除） | 2026-08-23 |
 | 9 | フロントエンドの依存構成 | **supabase-js を使わず fetch で直叩き**（CDN依存ゼロ） | 2026-08-23 |
 | 10 | 予約の変更（枠移動） | 提供しない。キャンセル後に取り直す | 2026-08-23 |
+| 11 | 端末単位の保有上限 | **1セッション（1晩）あたり2枠。グループ名上限と併用**。`localStorage` の UUID で識別し、回避可能であることを許容する | 2026-08-24 |
 
 ### v1 からの主な仕様変更
 

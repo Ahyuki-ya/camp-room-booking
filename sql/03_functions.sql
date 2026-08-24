@@ -10,11 +10,19 @@
 -- ---------------------------------------------------------------------
 -- create_reservation
 -- ---------------------------------------------------------------------
+-- 引数が増えたため、旧シグネチャを明示的に落とす。create or replace では
+-- 引数リストを変更できず、放置すると多重定義になって PostgREST が
+-- どちらを呼ぶか決められなくなる。新規構築時は何もしない。
+drop function if exists create_reservation(smallint, timestamptz, text, text);
+
 create or replace function create_reservation(
   p_room_id    smallint,
   p_start_at   timestamptz,
   p_group_name text,
-  p_pin        text
+  p_pin        text,
+  -- FR-04 端末上限。既定値ありは意図的（§8.2 参照）。GitHub Pages が
+  -- 古い app.js をキャッシュしている間も予約を失敗させないため。
+  p_device_id  uuid default null
 ) returns uuid
 language plpgsql
 security definer
@@ -53,17 +61,34 @@ begin
   -- 5. 正規化キー。生成列 group_key と同一の式でなければならない。
   v_group_key := lower(normalize(v_group_name, NFKC));
 
-  -- 6. 同一グループ名のリクエストのみを直列化する。
+  -- 6. 同一グループ名／同一端末のリクエストのみを直列化する。
   --    これがないと「数える -> insert」の間に別トランザクションが割り込み、
   --    同時送信で上限を突破できてしまう（§5 枠数上限の整合性要件）。
-  --    無関係なグループはブロックしない。ロックは commit/rollback で自動解放。
+  --    無関係なグループ・端末はブロックしない。ロックは commit/rollback で自動解放。
+  --
+  --    順序は必ず「グループ -> 端末」。逆順の経路が存在しないため、
+  --    待ちの向きが一方向に揃い、デッドロックが原理的に起きない（§8.2）。
+  --    classid を 1 と 2 に分けているので両者のハッシュ値は干渉しない。
   perform pg_advisory_xact_lock(1, hashtext(v_group_key));
+  if p_device_id is not null then
+    perform pg_advisory_xact_lock(2, hashtext(p_device_id::text));
+  end if;
 
-  -- 7. 枠数上限（1セッションあたり2枠）
+  -- 7. 枠数上限（グループ名基準。1セッションあたり2枠）
   if (select count(*) from reservations r
         where r.group_key = v_group_key
           and r.session_date = v_session_date) >= 2 then
     raise exception using errcode = 'P0001', message = 'LIMIT_EXCEEDED';
+  end if;
+
+  -- 7b. 枠数上限（端末基準。1セッションあたり2枠）。グループ名上限とは
+  --     独立に適用する。別のグループ名を名乗っても同じ端末なら通さない。
+  if p_device_id is not null then
+    if (select count(*) from reservation_devices d
+          where d.device_id = p_device_id
+            and d.session_date = v_session_date) >= 2 then
+      raise exception using errcode = 'P0001', message = 'DEVICE_LIMIT_EXCEEDED';
+    end if;
   end if;
 
   -- 8. 予約本体の作成
@@ -89,6 +114,12 @@ begin
   -- 9. PIN ハッシュ
   insert into reservation_secrets (reservation_id, pin_hash)
   values (v_id, crypt(p_pin, gen_salt('bf')));
+
+  -- 10. 端末の記録（FR-04）
+  if p_device_id is not null then
+    insert into reservation_devices (reservation_id, device_id, session_date)
+    values (v_id, p_device_id, v_session_date);
+  end if;
 
   return v_id;
 end;
@@ -145,7 +176,7 @@ $$;
 -- security definer 関数はデフォルトで PUBLIC に EXECUTE が付くため、
 -- 明示的に剥がしてから anon にのみ付与する。
 -- ---------------------------------------------------------------------
-revoke all on function create_reservation(smallint, timestamptz, text, text) from public;
+revoke all on function create_reservation(smallint, timestamptz, text, text, uuid) from public;
 revoke all on function cancel_reservation(uuid, text) from public;
-grant execute on function create_reservation(smallint, timestamptz, text, text) to anon;
+grant execute on function create_reservation(smallint, timestamptz, text, text, uuid) to anon;
 grant execute on function cancel_reservation(uuid, text) to anon;

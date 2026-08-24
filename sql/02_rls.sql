@@ -12,6 +12,7 @@ alter table rooms                enable row level security;
 alter table slots                enable row level security;
 alter table reservations         enable row level security;
 alter table reservation_secrets  enable row level security;
+alter table reservation_devices  enable row level security;
 
 -- 読み取りのみ許可
 create policy p_rooms_select on rooms        for select to anon using (true);
@@ -19,4 +20,4 @@ create policy p_slots_select on slots        for select to anon using (true);
 create policy p_res_select   on reservations for select to anon using (true);
 
 -- reservations への INSERT / UPDATE / DELETE ポリシーは作らない
--- reservation_secrets へのポリシーは一切作らない
+-- reservation_secrets と reservation_devices へのポリシーは一切作らない

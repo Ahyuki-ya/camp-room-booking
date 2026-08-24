@@ -23,11 +23,49 @@ var modalOpen = false;
 var pollTimer = null;
 var booted = false;
 
+// --- 端末ID (§FR-04) -------------------------------------------------
+// 初回アクセス時に UUID を作って localStorage に置き、端末単位の枠数上限に
+// 使う。消去・プライベートブラウズ・別ブラウザで簡単に回避できる「柵」で
+// あって認証の代替ではない。仕様として承知の上で採用している。
+// localStorage が使えない環境では保存を諦め、その場限りのIDで動作を続ける
+// （上限は実質無効になるが、エラーで止めるよりはよい）。
+var DEVICE_KEY = 'camp_device_id';
+var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function newUuid() {
+  var c = window.crypto || window.msCrypto;
+  if (c && c.randomUUID) return c.randomUUID();
+  var b = new Uint8Array(16);
+  if (c && c.getRandomValues) {
+    c.getRandomValues(b);
+  } else {
+    for (var j = 0; j < 16; j++) b[j] = Math.floor(Math.random() * 256);
+  }
+  b[6] = (b[6] & 0x0f) | 0x40;   // version 4
+  b[8] = (b[8] & 0x3f) | 0x80;   // variant
+  var h = [];
+  for (var i = 0; i < 16; i++) h.push((b[i] + 0x100).toString(16).slice(1));
+  return h.slice(0, 4).join('') + '-' + h.slice(4, 6).join('') + '-' +
+         h.slice(6, 8).join('') + '-' + h.slice(8, 10).join('') + '-' +
+         h.slice(10, 16).join('');
+}
+
+var deviceId = (function () {
+  var v = null;
+  try { v = localStorage.getItem(DEVICE_KEY); } catch (e) { /* 利用不可 */ }
+  if (!v || !UUID_RE.test(v)) {
+    v = newUuid();
+    try { localStorage.setItem(DEVICE_KEY, v); } catch (e) { /* 保存できずとも続行 */ }
+  }
+  return v;
+})();
+
 // --- エラーコード → 表示文言 (§10) ----------------------------------
 var MESSAGES = {
   SLOT_TAKEN:         'この枠は他のグループが予約しました',
   DUPLICATE_IN_SLOT:  '同じ時間帯にすでに別の部屋を予約しています',
   LIMIT_EXCEEDED:     '1グループの予約はその晩あたり最大' + LIMIT_PER_SESSION + '枠までです。既存の予約をキャンセルしてください',
+  DEVICE_LIMIT_EXCEEDED: 'この端末からの予約はその晩あたり最大' + LIMIT_PER_SESSION + '枠までです。既存の予約をキャンセルしてください',
   PAST_SLOT:          'この時間帯はすでに開始しています',
   NO_SUCH_SLOT:       'この時間帯は予約対象外です',
   NO_SUCH_ROOM:       'その部屋は存在しません',
@@ -307,7 +345,8 @@ function submitCreate() {
     p_room_id: createTarget.room.id,
     p_start_at: createTarget.slot.start_at,
     p_group_name: name,
-    p_pin: pin
+    p_pin: pin,
+    p_device_id: deviceId
   }).then(function () {
     closeCreate();
     toast('予約しました');

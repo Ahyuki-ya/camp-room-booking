@@ -56,3 +56,16 @@ create table reservation_secrets (
   reservation_id uuid primary key references reservations(id) on delete cascade,
   pin_hash       text not null
 );
+
+-- 端末ごとの枠数を数えるための対応表 (FR-04) ---------------------------
+-- device_id を reservations に直接持たせると、anon が自由に SELECT できる
+-- ため「どの予約が同一端末から取られたか」を誰でも突き合わせられてしまう。
+-- PINハッシュと同じ理由で別表に分離する。
+-- session_date は数える側の都合で非正規化して持つ。
+create table reservation_devices (
+  reservation_id uuid primary key references reservations(id) on delete cascade,
+  device_id      uuid not null,
+  session_date   date not null
+);
+
+create index ix_resdev_device_session on reservation_devices (device_id, session_date);
