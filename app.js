@@ -139,6 +139,15 @@ var fmtTime = new Intl.DateTimeFormat('ja-JP', { timeZone: JST, hour: '2-digit',
 var fmtDay  = new Intl.DateTimeFormat('en-CA', { timeZone: JST, year: 'numeric', month: '2-digit', day: '2-digit' });
 var fmtTab  = new Intl.DateTimeFormat('ja-JP', { timeZone: JST, month: 'numeric', day: 'numeric', weekday: 'short' });
 
+// グリッドの見出し行は sticky でヘッダーの直下に貼り付く。その基準位置は
+// ヘッダーの実高さであり、端末の文字サイズ設定やタイトルの折り返しで変わる。
+// CSS に固定値を書くと、条件次第で見出し行がヘッダーの裏に潜り込む。
+function syncHeaderHeight() {
+  var hd = document.querySelector('.hd');
+  if (!hd) return;
+  document.documentElement.style.setProperty('--hd-h', hd.offsetHeight + 'px');
+}
+
 function serverNow() { return Date.now() + clockOffset; }
 function hhmm(ms)    { return fmtTime.format(new Date(ms)); }
 function jstDay(ms)  { return fmtDay.format(new Date(ms)); }
@@ -445,6 +454,7 @@ function boot() {
     return;
   }
 
+  syncHeaderHeight();
   setStatus('読み込み中…');
   loadStatic().then(function () {
     currentSession = pickInitialSession();
@@ -459,6 +469,15 @@ function boot() {
   setInterval(function () {
     if (booted) $('clock').textContent = hhmm(serverNow()) + ' JST';
   }, 60000);
+
+  // 画面回転や文字サイズ変更でヘッダーの高さが変わる。
+  // ResizeObserver があれば追随し、無ければ resize でしのぐ。
+  if (window.ResizeObserver) {
+    new ResizeObserver(syncHeaderHeight).observe(document.querySelector('.hd'));
+  } else {
+    window.addEventListener('resize', syncHeaderHeight);
+    window.addEventListener('orientationchange', syncHeaderHeight);
+  }
 }
 
 $('reloadBtn').addEventListener('click', function () {

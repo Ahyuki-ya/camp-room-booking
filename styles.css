@@ -116,7 +116,9 @@ table.grid thead th {
   font-size: 11px; font-weight: 600; color: var(--muted);
   letter-spacing: .04em;
   padding: 7px 1px; background: var(--surface);
-  position: sticky; top: 58px; z-index: 3;
+  /* ヘッダーの高さは端末の文字サイズ設定で変わる。app.js が実測して
+     --hd-h に入れる。取れなかった場合の保険として既定値を置く。 */
+  position: sticky; top: var(--hd-h, 64px); z-index: 3;
 }
 table.grid th.tcol { width: 48px; }
 table.grid td.tcell {
@@ -140,8 +142,9 @@ table.grid td.tcell {
 .cell.taken  { background: var(--surface-2); border-left-color: var(--edge); color: var(--text); font-weight: 600; cursor: pointer; }
 /* 予約済みだがキャンセル期限切れ: 同じ面だが縁を鈍らせ、文字も締めない */
 .cell.locked { background: var(--surface-2); border-left-color: var(--faint); color: var(--muted); cursor: pointer; }
-/* 終了: 触れない */
-.cell.past   { background: var(--surface); color: var(--faint); cursor: default; }
+/* 終了: 触れない。面は空きより沈めるが予約済みほど濃くせず、
+   左の帯を消すことで「押せない」ことを空きと区別する。 */
+.cell.past   { background: var(--surface); color: var(--faint); border-left-color: transparent; cursor: default; }
 .cell:active:not(.past) { background: var(--surface); }
 .cell.taken:active, .cell.locked:active { background: var(--line); }
 
@@ -151,8 +154,10 @@ table.grid td.tcell {
   font-size: 12px; color: var(--muted);
 }
 .legend li { display: flex; align-items: center; gap: 9px; margin-bottom: 7px; }
+/* セルと同じ見え方にする。帯の有無と色が状態の手がかりなので、
+   帯を省略せず「終了」だけ面と同色にして帯が無いことを示す。 */
 .chip {
-  width: 16px; height: 16px; border-radius: 4px; flex: none;
+  width: 18px; height: 18px; border-radius: 4px; flex: none;
   border: 1px solid var(--line);
 }
 .chip.free   { background: var(--bg);        border-left: 3px solid var(--line); }
