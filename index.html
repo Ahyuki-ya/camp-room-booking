@@ -1,0 +1,72 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- CSP: 外部CDNを一切使わないため 'self' で閉じられる。
+     connect-src は自分の Supabase プロジェクトのホストに書き換えること。
+     GitHub Pages は HTTP ヘッダを設定できないため meta で宣言する。
+     なお frame-ancestors は meta では無効（§7.5 で受容するリスクとして記載）。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src https://YOUR-PROJECT-REF.supabase.co; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+<title>合宿 部屋予約</title>
+<link rel="stylesheet" href="styles.css">
+
+<header class="hd">
+  <div class="hd-row">
+    <h1 id="campName">合宿 部屋予約</h1>
+    <button id="reloadBtn" class="btn-icon" type="button">更新</button>
+  </div>
+  <div class="hd-row">
+    <span id="clock" class="clock">--:--</span>
+    <span id="status" class="status"></span>
+  </div>
+</header>
+
+<nav id="tabs" class="tabs"></nav>
+
+<main>
+  <div id="grid" class="grid-wrap"></div>
+  <ul class="legend">
+    <li><span class="chip free"></span>空き（タップで予約）</li>
+    <li><span class="chip taken"></span>予約済み（タップでキャンセル）</li>
+    <li><span class="chip locked"></span>予約済み・キャンセル期限切れ</li>
+    <li><span class="chip past"></span>終了（操作不可）</li>
+  </ul>
+</main>
+
+<!-- 予約モーダル -->
+<div id="createModal" class="overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="createTitle">
+    <h2 id="createTitle">予約</h2>
+    <p id="createTarget" class="target"></p>
+    <label for="groupName">グループ名（1〜30文字）</label>
+    <input id="groupName" type="text" maxlength="30" autocomplete="off" enterkeyhint="next">
+    <label for="createPin">PIN（数字4桁）</label>
+    <input id="createPin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" enterkeyhint="done">
+    <p class="note">PINはキャンセル時に必要です。忘れないでください。<br>開始30分前を過ぎるとキャンセルできません。</p>
+    <p id="createError" class="err" hidden></p>
+    <div class="actions">
+      <button id="createCancel" class="btn-sub" type="button">閉じる</button>
+      <button id="createOk" class="btn-main" type="button">予約する</button>
+    </div>
+  </div>
+</div>
+
+<!-- キャンセルモーダル -->
+<div id="deleteModal" class="overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="deleteTitle">
+    <h2 id="deleteTitle">予約のキャンセル</h2>
+    <p id="deleteTarget" class="target"></p>
+    <div id="deleteBody">
+      <label for="deletePin">PIN（数字4桁）</label>
+      <input id="deletePin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" enterkeyhint="done">
+    </div>
+    <p id="deleteError" class="err" hidden></p>
+    <div class="actions">
+      <button id="deleteCancel" class="btn-sub" type="button">閉じる</button>
+      <button id="deleteOk" class="btn-danger" type="button">キャンセルする</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "deny": [
+      "Read(//Users/sakakibaraeidai/.ssh/**)",
+      "Read(//Users/sakakibaraeidai/.aws/**)",
+      "Read(//Users/sakakibaraeidai/.gnupg/**)",
+      "Read(//Users/sakakibaraeidai/.config/**)",
+      "Read(//Users/sakakibaraeidai/Library/Keychains/**)",
+      "Read(//Users/sakakibaraeidai/.claude/.credentials.json)"
+    ],
+    "additionalDirectories": []
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|NotebookEdit|Glob|Grep|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR:-.}/.claude/guard-path.py\"",
+            "timeout": 10,
+            "statusMessage": "パスのガードレールを確認中"
+          }
+        ]
+      }
+    ]
+  }
+}

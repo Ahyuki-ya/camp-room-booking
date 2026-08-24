@@ -1,0 +1,272 @@
+# 合宿 部屋予約システム 要件定義書
+
+> **この文書の使い方（コーディングエージェント向け）**
+> 本書は実装の唯一の仕様源です。`【要確認】` が付いた項目は施主に確認するまで実装を確定しないこと。
+> 仕様に曖昧さを見つけた場合は、勝手に解釈せず質問すること。
+
+---
+
+## 1. 目的とスコープ
+
+サークル合宿において、5つの部屋を1時間単位で交代利用するための予約システムを構築する。
+参加者は代表名（グループ名）で任意の空き枠を予約でき、予約状況は全員がリアルタイムに近い形で閲覧できる。
+
+### スコープ内
+- 部屋 × 時間枠のグリッド表示(時間は22:00-7:00)
+- グループ名＋PINによる予約・キャンセル
+- 二重予約の防止
+- 主催者による予約状況の閲覧・手動修正（管理コンソール経由）
+
+### スコープ外
+- ユーザーアカウント登録・ログイン
+- 決済、メール/LINE通知
+- 部屋ごとの設備管理・備品予約
+- 予約履歴の統計分析
+
+---
+
+## 2. 用語定義
+
+| 用語 | 定義 |
+|---|---|
+| 部屋 (room) | 予約対象となる物理的な部屋。全5室。 |
+| スロット (slot) | 予約の最小時間単位。1時間、毎正時開始。 |
+| セル (cell) | 部屋 × スロットの組み合わせ。予約の実体はセル1つに対応する。 |
+| グループ | 予約主体。代表者名またはグループ名の文字列で識別する。 |
+| PIN | 予約時にグループが設定する4桁数字。キャンセル時の本人確認に使う。 |
+
+---
+
+## 3. 利用者と権限
+
+| 利用者 | 手段 | できること |
+|---|---|---|
+| 参加者 | 公開URL（GitHub Pages） | 予約状況の閲覧、予約の作成、PINを知っている予約のキャンセル |
+| 主催者 | Supabase ダッシュボード | 全データの閲覧・編集・削除、スロット定義の変更 |
+
+- 参加者向けの認証は行わない。URLを知っている者＝サークル関係者として運用する。
+- ただし**予約の改ざん・一括削除は技術的に不可能**でなければならない（第7章）。
+
+---
+
+## 4. 機能要件
+
+### FR-01 予約状況の一覧表示
+- 横軸を部屋（5列）、縦軸を時間スロットとするグリッドを表示する。
+- 空きセルは「空」と表示し、タップ可能であることが視覚的に分かること。
+- 予約済みセルはグループ名（＋メモがあればメモ）を表示する。
+- 複数日程にまたがる場合は、日付でタブまたはセクションを分ける。
+- 現在時刻より過去のスロットはグレーアウトし、操作不可とする。
+- 画面は30秒間隔で自動再取得する。手動リロードボタンも設置する。
+
+### FR-02 予約の作成
+- 空きセルをタップするとモーダルが開く。入力項目：
+  - グループ名（必須、1〜30文字、前後空白はトリム）
+  - PIN（必須、半角数字4桁）
+- 確定ボタン押下で RPC `create_reservation` を呼ぶ。
+- 成功時：モーダルを閉じ、グリッドを再取得して結果を反映する。
+- 失敗時：第10章のエラー表示規則に従う。
+- 二重送信防止のため、送信中は確定ボタンを無効化する。
+
+### FR-03 予約のキャンセル
+- 予約済みセルをタップするとモーダルが開き、予約内容とPIN入力欄を表示する。
+- PINが一致した場合のみ削除する。RPC `cancel_reservation` を呼ぶ。
+- PIN不一致時はエラーを表示し、予約は残す。
+
+### FR-04 予約数の上限
+- 1グループが同時に保有できる予約は最大 **2枠**【要確認】とする。
+- 同一スロットに同一グループが複数部屋を予約することは禁止する。
+- 判定はグループ名の大文字小文字・前後空白を無視した正規化文字列で行う。
+
+### FR-05 スロット定義
+- 予約可能な日時の集合は `slots` テーブルで定義する。フロントエンドにハードコードしない。
+- スロットに存在しない日時への予約は外部キー制約で拒否される。
+- 主催者はダッシュボードから行を追加・削除するだけで予約可能時間を変更できる。
+
+---
+
+## 5. 非機能要件
+
+| 項目 | 要件 |
+|---|---|
+| 同時利用者 | 最大20名程度 |
+| デバイス | スマートフォン主体。レスポンシブ必須。iOS Safari / Android Chrome で検証すること。 |
+| 通信環境 | 合宿所の回線は不安定な想定。初回ロードのペイロードを小さく保ち、CDN依存を最小限にする。 |
+| 応答時間 | 予約操作は通常1秒以内に結果を返す。 |
+| データ整合性 | **二重予約は如何なる同時実行下でも発生してはならない。** アプリケーション層のチェックではなくDB制約で保証すること。 |
+| タイムゾーン | データは `timestamptz`（UTC）で保持し、表示は `Asia/Tokyo` 固定。 |
+| ブラウザ保存 | localStorage / sessionStorage は使用しない（グループ名の再入力補助が必要な場合のみ、メモリ上の状態で対応）。 |
+
+---
+
+## 6. データモデル（Supabase / PostgreSQL）
+
+```sql
+create extension if not exists pgcrypto;
+
+-- 部屋マスタ
+create table rooms (
+  id         smallint primary key,
+  name       text not null,
+  sort_order smallint not null
+);
+
+-- 予約可能スロット（主催者が事前に投入）
+create table slots (
+  start_at timestamptz primary key
+);
+
+-- 予約本体
+create table reservations (
+  id         uuid primary key default gen_random_uuid(),
+  room_id    smallint    not null references rooms(id),
+  start_at   timestamptz not null references slots(start_at),
+  group_name text        not null,
+  note       text,
+  created_at timestamptz not null default now(),
+  constraint uq_room_slot   unique (room_id, start_at),
+  constraint chk_group_name check (char_length(btrim(group_name)) between 1 and 30),
+  constraint chk_note       check (note is null or char_length(note) <= 100)
+);
+
+-- 同一スロットで同一グループが複数部屋を取ることを禁止（FR-04）
+create unique index uq_group_slot
+  on reservations (start_at, lower(btrim(group_name)));
+
+-- PINハッシュは本体から分離し、anonからは一切読めなくする
+create table reservation_secrets (
+  reservation_id uuid primary key references reservations(id) on delete cascade,
+  pin_hash       text not null
+);
+```
+
+**設計意図**：PINハッシュを別テーブルに置くのは、フロントエンドが `select *` を書いてもハッシュが漏れない構造にするため。この分離は変更しないこと。
+
+---
+
+## 7. セキュリティ / RLS
+
+前提：GitHub Pages にデプロイするため、Supabase の URL と anon key はソース上で公開される。**anon key は秘密情報として扱わない**設計にすること。
+
+```sql
+alter table rooms                enable row level security;
+alter table slots                enable row level security;
+alter table reservations         enable row level security;
+alter table reservation_secrets  enable row level security;
+
+-- 読み取りのみ許可
+create policy p_rooms_select on rooms       for select to anon using (true);
+create policy p_slots_select on slots       for select to anon using (true);
+create policy p_res_select   on reservations for select to anon using (true);
+
+-- reservation_secrets にはポリシーを一切作らない（= anon からアクセス不可）
+-- reservations への INSERT / UPDATE / DELETE ポリシーも作らない（= RPC 経由のみ）
+```
+
+### 満たすべきセキュリティ特性
+1. ブラウザのDevToolsから `supabase.from('reservations').delete()` を直接実行しても失敗すること。
+2. `reservation_secrets` の内容がクライアントから一切取得できないこと。
+3. PINは平文で保存されないこと（`crypt()` + `gen_salt('bf')`）。
+4. **PIN総当たり対策**：`cancel_reservation` の失敗時に `pg_sleep(0.5)` を入れる。4桁PINは原理的に総当たり可能だが、部内利用のため許容する。より強い保護が必要なら6桁化を検討する【要確認】。
+
+---
+
+## 8. API（RPC）
+
+クライアントは以下の2関数のみを書き込みに使う。いずれも `security definer` かつ `set search_path = public`。
+
+### create_reservation
+```
+create_reservation(
+  p_room_id    smallint,
+  p_start_at   timestamptz,
+  p_group_name text,
+  p_pin        text,
+  p_note       text default null
+) returns uuid
+```
+処理順序：
+1. `p_pin` が `^[0-9]{4}$` に一致しなければ `INVALID_PIN` を raise
+2. 正規化グループ名の保有予約数を数え、上限（2）以上なら `LIMIT_EXCEEDED` を raise
+3. `reservations` に insert（トリム済みの値で）
+4. `reservation_secrets` に `crypt(p_pin, gen_salt('bf'))` を insert
+5. `unique_violation` を捕捉して `SLOT_TAKEN` に変換して raise
+
+### cancel_reservation
+```
+cancel_reservation(p_id uuid, p_pin text) returns boolean
+```
+1. `reservation_secrets` から該当行を取得し `pin_hash = crypt(p_pin, pin_hash)` を判定
+2. 不一致または行なしなら `pg_sleep(0.5)` の後 `INVALID_PIN` を raise
+3. 一致すれば `reservations` から delete（`on delete cascade` で secrets も消える）
+
+両関数に `grant execute ... to anon;` を付与すること。
+
+---
+
+## 9. 画面仕様
+
+構成は単一HTMLファイル（`index.html`）＋必要に応じてJS/CSSの分割。フレームワークは任意だが、ビルド不要で GitHub Pages にそのまま置ける構成を優先する。
+
+| 画面 | 内容 |
+|---|---|
+| メイン | ヘッダー（合宿名・現在時刻・更新ボタン）／日付タブ／予約グリッド／凡例 |
+| 予約モーダル | 対象セル名の表示、グループ名・PIN・メモの入力、確定／キャンセル |
+| 削除モーダル | 予約内容の表示、PIN入力、削除／閉じる |
+| トースト | 成功・失敗メッセージの表示（3秒で自動消滅） |
+
+- グリッドは横スクロールではなく、5列が画面幅に収まるようにする（スマホ縦持ちで判読可能なこと）。
+- PIN入力欄は `inputmode="numeric"` を指定する。
+
+---
+
+## 10. バリデーションとエラー表示
+
+| エラーコード | 発生条件 | 参加者への表示 | 追加動作 |
+|---|---|---|---|
+| `SLOT_TAKEN` | 同時操作で先を越された | 「この枠は他のグループが予約しました」 | グリッドを即再取得 |
+| `LIMIT_EXCEEDED` | 上限枠数超過 | 「1グループの予約は最大2枠までです。既存の予約をキャンセルしてください」 | — |
+| `INVALID_PIN`（作成時） | PIN形式不正 | 「PINは数字4桁で入力してください」 | — |
+| `INVALID_PIN`（削除時） | PIN不一致 | 「PINが違います」 | — |
+| ネットワークエラー | 通信失敗 | 「通信に失敗しました。再度お試しください」 | 再試行ボタン |
+
+クライアント側でも送信前に形式チェックを行うが、**サーバー側の検証を省略してはならない**。
+
+---
+
+## 11. 環境とデプロイ
+
+- フロントエンド：GitHub Pages（`docs/` またはリポジトリルート）
+- バックエンド：Supabase 無料プラン
+- 設定値（Supabase URL / anon key）は `config.js` に分離する。公開前提のためリポジトリにコミットしてよい。
+- 初期データ投入用のSQL（`rooms` 5件、`slots` 全件）を `seed.sql` として同梱すること。
+
+---
+
+## 12. 受け入れ基準
+
+以下がすべて満たされたときに完成とする。
+
+1. 2つの端末から**同一セルを同時に**予約したとき、片方のみ成功し、もう片方に `SLOT_TAKEN` のメッセージが出て画面が最新状態に更新される。
+2. 上限枠数に達したグループが3枠目を予約しようとすると拒否される。
+3. 同一グループが同じ時間帯に2部屋を予約しようとすると拒否される。
+4. 正しいPINでキャンセルでき、誤ったPINではキャンセルできない。
+5. DevToolsのコンソールから `reservations` への直接 delete / update / insert を試みると、すべて失敗する。
+6. DevToolsから `reservation_secrets` の内容を取得できない。
+7. 過去のスロットが操作不可になっている。
+8. iPhone実機（Safari）で5列のグリッドが横スクロールなしに判読・操作できる。
+9. 全端末で表示時刻がJSTで一致する。
+
+---
+
+## 13. 未決事項【要確認】
+
+| # | 項目 | 暫定値 |
+|---|---|---|
+| 1 | 合宿の日程（何月何日から何泊か） | 未定 |
+| 2 | 予約可能な時間帯（例：13:00〜24:00） | 未定 |
+| 3 | 部屋の名称（部屋A〜E？ 実際の部屋番号？） | 部屋1〜5 |
+| 4 | 1グループの同時保有上限 | 2枠 |
+| 5 | キャンセル可能期限（直前まで可か、開始後は不可か） | 開始時刻を過ぎたら不可 |
+| 6 | 主催者用の一括操作（全消し・CSV出力）が必要か | 不要（ダッシュボードで代替） |
+| 7 | PINの桁数を6桁に強化するか | 4桁 |

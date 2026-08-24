@@ -1,0 +1,14 @@
+# 秘密情報。絶対にコミットしない。
+.env
+.env.local
+.env.*.local
+
+# Claude Code のローカル設定
+.claude/settings.local.json
+
+# macOS
+.DS_Store
+
+# ローカル開発ツールの作業ファイル
+tools/.pgdata/
+tools/*.log

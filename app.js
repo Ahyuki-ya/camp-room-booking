@@ -1,0 +1,444 @@
+'use strict';
+// =====================================================================
+// 合宿 部屋予約システム / 要件定義書 v2
+//
+// 依存ゼロ。supabase-js を使わず PostgREST を fetch で直接呼ぶ (§7.2)。
+// ユーザー入力の DOM 挿入は textContent のみ。innerHTML は使用しない (§7.4-6)。
+// =====================================================================
+
+var C = window.CONFIG || {};
+var REST = C.SUPABASE_URL + '/rest/v1/';
+var LIMIT_PER_SESSION = 2;
+var CANCEL_CUTOFF_MS = 30 * 60 * 1000;   // 開始30分前まで (§FR-03)
+var POLL_MS = 30 * 1000;                 // 自動再取得 (§FR-01)
+
+// --- 状態 -----------------------------------------------------------
+var rooms = [];          // [{id, name, sort_order}]
+var slots = [];          // [{start_at, session_date, ms}]
+var reservations = [];   // [{id, room_id, start_at, group_name, ms}]
+var sessions = [];       // ['2026-09-01', ...]
+var currentSession = null;
+var clockOffset = 0;     // サーバ時刻 - 端末時刻 (§FR-06)
+var modalOpen = false;
+var pollTimer = null;
+var booted = false;
+
+// --- エラーコード → 表示文言 (§10) ----------------------------------
+var MESSAGES = {
+  SLOT_TAKEN:         'この枠は他のグループが予約しました',
+  DUPLICATE_IN_SLOT:  '同じ時間帯にすでに別の部屋を予約しています',
+  LIMIT_EXCEEDED:     '1グループの予約はその晩あたり最大' + LIMIT_PER_SESSION + '枠までです。既存の予約をキャンセルしてください',
+  PAST_SLOT:          'この時間帯はすでに開始しています',
+  NO_SUCH_SLOT:       'この時間帯は予約対象外です',
+  NO_SUCH_ROOM:       'その部屋は存在しません',
+  TOO_LATE:           '開始30分前を過ぎたためキャンセルできません',
+  INVALID_GROUP_NAME: 'グループ名は1〜30文字で入力してください',
+  NETWORK:            '通信に失敗しました。再度お試しください'
+};
+// 受信したらグリッドを即再取得すべきコード (§10 の「追加動作」)
+var REFETCH_ON = {
+  SLOT_TAKEN: 1, DUPLICATE_IN_SLOT: 1, PAST_SLOT: 1,
+  NO_SUCH_SLOT: 1, NO_SUCH_ROOM: 1, TOO_LATE: 1
+};
+
+function messageFor(code, context) {
+  if (code === 'INVALID_PIN') {
+    return context === 'create' ? 'PINは数字4桁で入力してください' : 'PINが違います';
+  }
+  return MESSAGES[code] || ('エラーが発生しました（' + code + '）');
+}
+
+// --- 通信 -----------------------------------------------------------
+function syncClock(res) {
+  // PostgREST は Access-Control-Expose-Headers に Date を含めるため読める。
+  // 読めない環境では端末時計にフォールバックする（オフセット0のまま）。
+  var d = res.headers.get('Date');
+  if (!d) return;
+  var t = Date.parse(d);
+  if (!isNaN(t)) clockOffset = t - Date.now();
+}
+
+function request(path, options) {
+  options = options || {};
+  var headers = {
+    apikey: C.SUPABASE_ANON_KEY,
+    Authorization: 'Bearer ' + C.SUPABASE_ANON_KEY,
+    'Content-Type': 'application/json'
+  };
+  return fetch(REST + path, {
+    method: options.method || 'GET',
+    headers: headers,
+    body: options.body,
+    cache: 'no-store'
+  }).then(function (res) {
+    syncClock(res);
+    return res.text().then(function (text) {
+      var body = null;
+      try { body = text ? JSON.parse(text) : null; } catch (e) { /* 非JSON */ }
+      if (!res.ok) {
+        // PostgREST のエラーは {code, message, details, hint}。
+        // §8.1 の規約により message に機械可読コードが入る。
+        var err = new Error('rpc-failed');
+        err.code = (body && body.message) ? body.message : 'NETWORK';
+        throw err;
+      }
+      return body;
+    });
+  }, function () {
+    var err = new Error('network');
+    err.code = 'NETWORK';
+    throw err;
+  });
+}
+
+function rpc(fn, args) {
+  return request('rpc/' + fn, { method: 'POST', body: JSON.stringify(args) });
+}
+
+// --- 時刻 (§9.2 表示は Asia/Tokyo 固定) -------------------------------
+var JST = 'Asia/Tokyo';
+var fmtTime = new Intl.DateTimeFormat('ja-JP', { timeZone: JST, hour: '2-digit', minute: '2-digit', hour12: false });
+var fmtDay  = new Intl.DateTimeFormat('en-CA', { timeZone: JST, year: 'numeric', month: '2-digit', day: '2-digit' });
+var fmtTab  = new Intl.DateTimeFormat('ja-JP', { timeZone: JST, month: 'numeric', day: 'numeric', weekday: 'short' });
+
+function serverNow() { return Date.now() + clockOffset; }
+function hhmm(ms)    { return fmtTime.format(new Date(ms)); }
+function jstDay(ms)  { return fmtDay.format(new Date(ms)); }
+
+// session_date ('YYYY-MM-DD') を JST の正午として解釈しラベル化する。
+// 正午を使うのは、UTC深夜起点だと環境によって日付がずれる余地を消すため。
+function sessionLabel(dateStr) {
+  var ms = Date.parse(dateStr + 'T12:00:00+09:00');
+  return fmtTab.format(new Date(ms)) + 'の夜';
+}
+
+// 行ラベル。session_date と実日付が違えば「翌」を付ける (§9.2)
+function slotLabel(slot) {
+  var prefix = (jstDay(slot.ms) !== slot.session_date) ? '翌' : '';
+  return prefix + hhmm(slot.ms);
+}
+
+// --- DOM ヘルパ -----------------------------------------------------
+function $(id) { return document.getElementById(id); }
+function el(tag, cls, text) {
+  var n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined && text !== null) n.textContent = text;  // 常に textContent
+  return n;
+}
+function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+
+var toastTimer = null;
+function toast(text, bad) {
+  var t = $('toast');
+  t.textContent = text;
+  t.className = bad ? 'toast bad' : 'toast';
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { t.hidden = true; }, 3000);
+}
+function setStatus(text, isError) {
+  var s = $('status');
+  s.textContent = text;
+  s.className = isError ? 'status err' : 'status';
+}
+
+// --- データ取得 -----------------------------------------------------
+function loadStatic() {
+  return Promise.all([
+    request('rooms?select=id,name,sort_order&order=sort_order'),
+    request('slots?select=start_at,session_date&order=start_at')
+  ]).then(function (r) {
+    rooms = r[0] || [];
+    slots = (r[1] || []).map(function (s) {
+      return { start_at: s.start_at, session_date: s.session_date, ms: Date.parse(s.start_at) };
+    });
+    sessions = [];
+    slots.forEach(function (s) {
+      if (sessions.indexOf(s.session_date) === -1) sessions.push(s.session_date);
+    });
+    sessions.sort();
+  });
+}
+
+function loadReservations() {
+  return request('reservations?select=id,room_id,start_at,group_name').then(function (rows) {
+    reservations = (rows || []).map(function (r) {
+      r.ms = Date.parse(r.start_at);
+      return r;
+    });
+  });
+}
+
+// --- 描画 -----------------------------------------------------------
+function pickInitialSession() {
+  // まだ終わっていない最も早いセッションを選ぶ。全て終了なら最後のもの (§9.1)
+  var now = serverNow();
+  for (var i = 0; i < sessions.length; i++) {
+    var last = 0;
+    slots.forEach(function (s) { if (s.session_date === sessions[i] && s.ms > last) last = s.ms; });
+    if (last + 3600000 > now) return sessions[i];
+  }
+  return sessions[sessions.length - 1] || null;
+}
+
+function renderTabs() {
+  var nav = $('tabs');
+  clear(nav);
+  sessions.forEach(function (d) {
+    var b = el('button', d === currentSession ? 'on' : '', sessionLabel(d));
+    b.type = 'button';
+    b.addEventListener('click', function () { currentSession = d; render(); });
+    nav.appendChild(b);
+  });
+}
+
+function resIndex() {
+  var map = {};
+  reservations.forEach(function (r) { map[r.room_id + '@' + r.ms] = r; });
+  return map;
+}
+
+function renderGrid() {
+  var wrap = $('grid');
+  clear(wrap);
+  var mine = slots.filter(function (s) { return s.session_date === currentSession; });
+  if (!mine.length || !rooms.length) {
+    wrap.appendChild(el('p', 'empty', '予約可能な枠がありません。'));
+    return;
+  }
+  var now = serverNow();
+  var byCell = resIndex();
+
+  var table = el('table', 'grid');
+  var thead = el('thead');
+  var hr = el('tr');
+  hr.appendChild(el('th', 'tcol', ''));
+  rooms.forEach(function (rm) { hr.appendChild(el('th', '', rm.name)); });
+  thead.appendChild(hr);
+  table.appendChild(thead);
+
+  var tbody = el('tbody');
+  mine.forEach(function (slot) {
+    var tr = el('tr');
+    tr.appendChild(el('td', 'tcell', slotLabel(slot)));
+    rooms.forEach(function (rm) {
+      var td = el('td');
+      var res = byCell[rm.id + '@' + slot.ms];
+      var isPast = slot.ms <= now;
+      var isLocked = (slot.ms - CANCEL_CUTOFF_MS) <= now;
+      var btn = el('button');
+      btn.type = 'button';
+
+      if (res && isPast) {
+        btn.className = 'cell past';
+        btn.textContent = res.group_name;
+        btn.disabled = true;
+      } else if (res) {
+        btn.className = isLocked ? 'cell locked' : 'cell taken';
+        btn.textContent = res.group_name;
+        btn.addEventListener('click', function () { openDelete(res, rm, slot, isLocked); });
+      } else if (isPast) {
+        btn.className = 'cell past';
+        btn.textContent = '—';
+        btn.disabled = true;
+      } else {
+        btn.className = 'cell free';
+        btn.textContent = '空';
+        btn.addEventListener('click', function () { openCreate(rm, slot); });
+      }
+      td.appendChild(btn);
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+}
+
+function render() {
+  $('clock').textContent = hhmm(serverNow()) + ' JST';
+  renderTabs();
+  renderGrid();
+}
+
+// --- 予約モーダル ---------------------------------------------------
+var createTarget = null;
+
+function openCreate(room, slot) {
+  createTarget = { room: room, slot: slot };
+  $('createTarget').textContent = room.name + ' / ' + sessionLabel(slot.session_date) + ' ' + slotLabel(slot);
+  $('groupName').value = '';
+  $('createPin').value = '';
+  $('createError').hidden = true;
+  $('createOk').disabled = false;
+  $('createModal').hidden = false;
+  modalOpen = true;
+  $('groupName').focus();
+}
+
+function closeCreate() {
+  $('createModal').hidden = true;
+  modalOpen = false;
+  createTarget = null;
+}
+
+function submitCreate() {
+  if (!createTarget) return;
+  var name = $('groupName').value.trim();
+  var pin = $('createPin').value.trim();
+  var errBox = $('createError');
+
+  // クライアント側の事前チェック。サーバ側の検証は省略されない (§10)
+  if (name.length < 1 || name.length > 30) {
+    errBox.textContent = messageFor('INVALID_GROUP_NAME');
+    errBox.hidden = false; return;
+  }
+  if (!/^[0-9]{4}$/.test(pin)) {
+    errBox.textContent = messageFor('INVALID_PIN', 'create');
+    errBox.hidden = false; return;
+  }
+
+  var btn = $('createOk');
+  btn.disabled = true;                       // 二重送信防止 (§FR-02)
+  errBox.hidden = true;
+
+  rpc('create_reservation', {
+    p_room_id: createTarget.room.id,
+    p_start_at: createTarget.slot.start_at,
+    p_group_name: name,
+    p_pin: pin
+  }).then(function () {
+    closeCreate();
+    toast('予約しました');
+    return refresh();
+  }, function (err) {
+    var code = err.code;
+    errBox.textContent = messageFor(code, 'create');
+    errBox.hidden = false;
+    btn.disabled = false;
+    if (REFETCH_ON[code]) refresh();
+  });
+}
+
+// --- キャンセルモーダル ---------------------------------------------
+var deleteTarget = null;
+
+function openDelete(res, room, slot, isLocked) {
+  deleteTarget = res;
+  $('deleteTarget').textContent = room.name + ' / ' + slotLabel(slot) + ' / ' + res.group_name;
+  $('deletePin').value = '';
+  $('deleteError').hidden = true;
+  $('deleteBody').hidden = isLocked;
+  $('deleteOk').hidden = isLocked;
+  $('deleteOk').disabled = false;
+  if (isLocked) {
+    $('deleteError').textContent = messageFor('TOO_LATE');
+    $('deleteError').hidden = false;
+  }
+  $('deleteModal').hidden = false;
+  modalOpen = true;
+  if (!isLocked) $('deletePin').focus();
+}
+
+function closeDelete() {
+  $('deleteModal').hidden = true;
+  modalOpen = false;
+  deleteTarget = null;
+}
+
+function submitDelete() {
+  if (!deleteTarget) return;
+  var pin = $('deletePin').value.trim();
+  var errBox = $('deleteError');
+  if (!/^[0-9]{4}$/.test(pin)) {
+    errBox.textContent = messageFor('INVALID_PIN', 'delete');
+    errBox.hidden = false; return;
+  }
+  var btn = $('deleteOk');
+  btn.disabled = true;
+  errBox.hidden = true;
+
+  rpc('cancel_reservation', { p_id: deleteTarget.id, p_pin: pin }).then(function () {
+    closeDelete();
+    toast('キャンセルしました');
+    return refresh();
+  }, function (err) {
+    var code = err.code;
+    errBox.textContent = messageFor(code, 'delete');
+    errBox.hidden = false;
+    btn.disabled = false;
+    if (REFETCH_ON[code]) refresh();
+  });
+}
+
+// --- 再取得とポーリング (§FR-07) --------------------------------------
+function refresh() {
+  return loadReservations().then(function () {
+    render();
+    setStatus('更新 ' + hhmm(serverNow()));
+  }, function () {
+    setStatus(MESSAGES.NETWORK, true);
+    toast(MESSAGES.NETWORK, true);
+  });
+}
+
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(tick, POLL_MS);
+}
+
+function tick() {
+  // モーダル表示中とタブ非表示中は取得しない
+  if (modalOpen || document.hidden) { schedulePoll(); return; }
+  refresh().then(schedulePoll, schedulePoll);
+}
+
+// --- 起動 -----------------------------------------------------------
+function boot() {
+  $('campName').textContent = C.CAMP_NAME || '合宿 部屋予約';
+  document.title = C.CAMP_NAME || '合宿 部屋予約';
+
+  if (!C.SUPABASE_URL || C.SUPABASE_URL.indexOf('YOUR-PROJECT-REF') !== -1) {
+    $('grid').appendChild(el('p', 'empty',
+      'config.js の SUPABASE_URL と SUPABASE_ANON_KEY を設定してください。' +
+      'あわせて index.html の Content-Security-Policy の connect-src も同じホストに書き換えてください。'));
+    return;
+  }
+
+  setStatus('読み込み中…');
+  loadStatic().then(function () {
+    currentSession = pickInitialSession();
+    booted = true;
+    return refresh();
+  }).then(schedulePoll, function () {
+    setStatus(MESSAGES.NETWORK, true);
+    $('grid').appendChild(el('p', 'empty', MESSAGES.NETWORK));
+  });
+
+  // 時計の表示だけは毎分更新する
+  setInterval(function () {
+    if (booted) $('clock').textContent = hhmm(serverNow()) + ' JST';
+  }, 60000);
+}
+
+$('reloadBtn').addEventListener('click', function () {
+  var b = $('reloadBtn');
+  b.disabled = true;
+  refresh().then(function () { b.disabled = false; }, function () { b.disabled = false; });
+});
+$('createOk').addEventListener('click', submitCreate);
+$('createCancel').addEventListener('click', closeCreate);
+$('deleteOk').addEventListener('click', submitDelete);
+$('deleteCancel').addEventListener('click', closeDelete);
+$('createPin').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitCreate(); });
+$('deletePin').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitDelete(); });
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Escape') { if (!$('createModal').hidden) closeCreate(); if (!$('deleteModal').hidden) closeDelete(); }
+});
+document.addEventListener('visibilitychange', function () {
+  // 再表示時に即座に1回取得する (§FR-07)
+  if (!document.hidden && booted && !modalOpen) { refresh(); schedulePoll(); }
+});
+
+boot();
