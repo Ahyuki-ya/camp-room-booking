@@ -23,6 +23,13 @@ var modalOpen = false;
 var pollTimer = null;
 var booted = false;
 
+// --- 管理モード (§14) -------------------------------------------------
+// URL に #admin が付いているときだけ入口が現れる。パスワードは sessionStorage
+// に置く（localStorage にすると端末を貸したときに管理権限まで貸すことになる）。
+var ADMIN_PW_KEY = 'camp_admin_pw';
+var adminMode = false;
+var adminPassword = null;
+
 // --- 端末ID (§FR-04) -------------------------------------------------
 // 初回アクセス時に UUID を作って localStorage に置き、端末単位の枠数上限に
 // 使う。消去・プライベートブラウズ・別ブラウザで簡単に回避できる「柵」で
@@ -71,12 +78,16 @@ var MESSAGES = {
   NO_SUCH_ROOM:       'その部屋は存在しません',
   TOO_LATE:           '開始30分前を過ぎたためキャンセルできません',
   INVALID_GROUP_NAME: 'グループ名は1〜30文字で入力してください',
+  INVALID_ADMIN_PASSWORD: '管理パスワードが違います',
+  NO_SUCH_RESERVATION:    'その予約は見つかりません。すでに削除されている可能性があります',
+  NO_SUCH_DELETED:        'その削除済み予約は見つかりません',
   NETWORK:            '通信に失敗しました。再度お試しください'
 };
 // 受信したらグリッドを即再取得すべきコード (§10 の「追加動作」)
 var REFETCH_ON = {
   SLOT_TAKEN: 1, DUPLICATE_IN_SLOT: 1, PAST_SLOT: 1,
-  NO_SUCH_SLOT: 1, NO_SUCH_ROOM: 1, TOO_LATE: 1
+  NO_SUCH_SLOT: 1, NO_SUCH_ROOM: 1, TOO_LATE: 1,
+  NO_SUCH_RESERVATION: 1
 };
 
 function messageFor(code, context) {
@@ -284,7 +295,12 @@ function renderGrid() {
       } else if (res) {
         btn.className = isLocked ? 'cell locked' : 'cell taken';
         btn.textContent = res.group_name;
-        btn.addEventListener('click', function () { openDelete(res, rm, slot, isLocked); });
+        // 管理モードでは PIN を問わず削除できる。キャンセル期限も無視する
+        // （期限を過ぎた予約を消せることが管理モードの主目的のため）。
+        btn.addEventListener('click', function () {
+          if (adminMode) { openAdminDelete(res, rm, slot); }
+          else { openDelete(res, rm, slot, isLocked); }
+        });
       } else if (isPast) {
         btn.className = 'cell past';
         btn.textContent = '—';
@@ -374,6 +390,9 @@ var deleteTarget = null;
 
 function openDelete(res, room, slot, isLocked) {
   deleteTarget = res;
+  // 管理用と同じモーダルを使い回すため、文言を毎回戻す
+  $('deleteTitle').textContent = '予約のキャンセル';
+  $('deleteOk').textContent = 'キャンセルする';
   $('deleteTarget').textContent = room.name + ' / ' + slotLabel(slot) + ' / ' + res.group_name;
   $('deletePin').value = '';
   $('deleteError').hidden = true;
@@ -397,19 +416,29 @@ function closeDelete() {
 
 function submitDelete() {
   if (!deleteTarget) return;
-  var pin = $('deletePin').value.trim();
   var errBox = $('deleteError');
-  if (!/^[0-9]{4}$/.test(pin)) {
-    errBox.textContent = messageFor('INVALID_PIN', 'delete');
-    errBox.hidden = false; return;
-  }
   var btn = $('deleteOk');
+  var call, done;
+
+  if (adminMode) {
+    call = rpc('admin_delete_reservation', { p_id: deleteTarget.id, p_password: adminPassword });
+    done = '削除しました';
+  } else {
+    var pin = $('deletePin').value.trim();
+    if (!/^[0-9]{4}$/.test(pin)) {
+      errBox.textContent = messageFor('INVALID_PIN', 'delete');
+      errBox.hidden = false; return;
+    }
+    call = rpc('cancel_reservation', { p_id: deleteTarget.id, p_pin: pin });
+    done = 'キャンセルしました';
+  }
+
   btn.disabled = true;
   errBox.hidden = true;
 
-  rpc('cancel_reservation', { p_id: deleteTarget.id, p_pin: pin }).then(function () {
+  call.then(function () {
     closeDelete();
-    toast('キャンセルしました');
+    toast(done);
     return refresh();
   }, function (err) {
     var code = err.code;
@@ -460,7 +489,10 @@ function boot() {
     currentSession = pickInitialSession();
     booted = true;
     return refresh();
-  }).then(schedulePoll, function () {
+  }).then(function () {
+    initAdmin();
+    schedulePoll();
+  }, function () {
     setStatus(MESSAGES.NETWORK, true);
     $('grid').appendChild(el('p', 'empty', MESSAGES.NETWORK));
   });
@@ -480,6 +512,165 @@ function boot() {
   }
 }
 
+
+// --- 管理モード (§14) -------------------------------------------------
+
+function roomById(id) {
+  for (var i = 0; i < rooms.length; i++) { if (rooms[i].id === id) return rooms[i]; }
+  return null;
+}
+
+function applyAdminUi() {
+  $('adminBar').hidden = !adminMode;
+  document.body.classList.toggle('admin', adminMode);
+}
+
+// パスワードを検証し、通れば管理モードに入る。
+// 失敗時は保持していたパスワードも捨てる（変更されている可能性があるため）。
+function enterAdmin(pw, onFail) {
+  return rpc('admin_verify', { p_password: pw }).then(function () {
+    adminMode = true;
+    adminPassword = pw;
+    try { sessionStorage.setItem(ADMIN_PW_KEY, pw); } catch (e) { /* 利用不可 */ }
+    applyAdminUi();
+    render();
+    return true;
+  }, function (err) {
+    adminMode = false;
+    adminPassword = null;
+    try { sessionStorage.removeItem(ADMIN_PW_KEY); } catch (e) { /* 利用不可 */ }
+    applyAdminUi();
+    if (onFail) onFail(err);
+    return false;
+  });
+}
+
+function exitAdmin() {
+  adminMode = false;
+  adminPassword = null;
+  try { sessionStorage.removeItem(ADMIN_PW_KEY); } catch (e) { /* 利用不可 */ }
+  applyAdminUi();
+  if (location.hash === '#admin') {
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+  render();
+  toast('管理モードを終了しました');
+}
+
+function openAdminAuth() {
+  $('adminPw').value = '';
+  $('adminAuthError').hidden = true;
+  $('adminAuthOk').disabled = false;
+  $('adminAuthModal').hidden = false;
+  modalOpen = true;
+  $('adminPw').focus();
+}
+
+function closeAdminAuth() {
+  $('adminAuthModal').hidden = true;
+  modalOpen = false;
+}
+
+function submitAdminAuth() {
+  var pw = $('adminPw').value.trim();
+  var errBox = $('adminAuthError');
+  if (!pw) {
+    errBox.textContent = messageFor('INVALID_ADMIN_PASSWORD');
+    errBox.hidden = false; return;
+  }
+  var btn = $('adminAuthOk');
+  btn.disabled = true;
+  errBox.hidden = true;
+  enterAdmin(pw, function (err) {
+    errBox.textContent = messageFor(err.code);
+    errBox.hidden = false;
+    btn.disabled = false;
+  }).then(function (ok) {
+    if (ok) { closeAdminAuth(); toast('管理モードに入りました'); }
+  });
+}
+
+// 管理モードでの削除。PIN を問わず、キャンセル期限も無視する。
+function openAdminDelete(res, room, slot) {
+  deleteTarget = res;
+  $('deleteTitle').textContent = '予約の削除（管理）';
+  $('deleteOk').textContent = '削除する';
+  $('deleteTarget').textContent = room.name + ' / ' + slotLabel(slot) + ' / ' + res.group_name;
+  $('deleteBody').hidden = true;
+  $('deleteOk').hidden = false;
+  $('deleteOk').disabled = false;
+  $('deleteError').hidden = true;
+  $('deleteModal').hidden = false;
+  modalOpen = true;
+}
+
+function openRestore() {
+  var list = $('restoreList');
+  clear(list);
+  $('restoreError').hidden = true;
+  list.appendChild(el('p', 'note', '読み込み中…'));
+  $('restoreModal').hidden = false;
+  modalOpen = true;
+
+  rpc('admin_list_deleted', { p_password: adminPassword }).then(function (rows) {
+    clear(list);
+    if (!rows || !rows.length) {
+      list.appendChild(el('p', 'note', '削除した予約はありません。'));
+      return;
+    }
+    rows.forEach(function (r) {
+      var rm = roomById(r.room_id);
+      var row = el('div', 'restore-row');
+      var info = el('div', 'restore-info');
+      info.appendChild(el('div', 'restore-name', r.group_name));
+      info.appendChild(el('div', 'restore-meta',
+        (rm ? rm.name : '部屋' + r.room_id) + ' / ' +
+        sessionLabel(r.session_date) + ' ' + hhmm(Date.parse(r.start_at))));
+      row.appendChild(info);
+      var b = el('button', 'btn-icon', '復元');
+      b.type = 'button';
+      b.addEventListener('click', function () { doRestore(r.id, b); });
+      row.appendChild(b);
+      list.appendChild(row);
+    });
+  }, function (err) {
+    clear(list);
+    $('restoreError').textContent = messageFor(err.code);
+    $('restoreError').hidden = false;
+  });
+}
+
+// 復元は枠が空いている場合のみ成功する。削除してから誰かが取った場合は
+// SLOT_TAKEN になる（§14.3）。その予約を先に消せば復元できる。
+function doRestore(id, btn) {
+  btn.disabled = true;
+  $('restoreError').hidden = true;
+  rpc('admin_restore_reservation', { p_id: id, p_password: adminPassword }).then(function () {
+    toast('復元しました');
+    refresh();
+    openRestore();
+  }, function (err) {
+    $('restoreError').textContent = messageFor(err.code);
+    $('restoreError').hidden = false;
+    btn.disabled = false;
+    if (REFETCH_ON[err.code]) refresh();
+  });
+}
+
+function closeRestore() {
+  $('restoreModal').hidden = true;
+  modalOpen = false;
+}
+
+// #admin が付いているときだけ入口を開く。
+function initAdmin() {
+  if (location.hash !== '#admin' || adminMode) return;
+  var saved = null;
+  try { saved = sessionStorage.getItem(ADMIN_PW_KEY); } catch (e) { /* 利用不可 */ }
+  if (saved) { enterAdmin(saved); return; }
+  openAdminAuth();
+}
+
 $('reloadBtn').addEventListener('click', function () {
   var b = $('reloadBtn');
   b.disabled = true;
@@ -491,8 +682,20 @@ $('deleteOk').addEventListener('click', submitDelete);
 $('deleteCancel').addEventListener('click', closeDelete);
 $('createPin').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitCreate(); });
 $('deletePin').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitDelete(); });
+$('adminAuthOk').addEventListener('click', submitAdminAuth);
+$('adminAuthCancel').addEventListener('click', closeAdminAuth);
+$('adminPw').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitAdminAuth(); });
+$('adminExit').addEventListener('click', exitAdmin);
+$('restoreBtn').addEventListener('click', openRestore);
+$('restoreClose').addEventListener('click', closeRestore);
+window.addEventListener('hashchange', initAdmin);
+
 document.addEventListener('keydown', function (e) {
-  if (e.key === 'Escape') { if (!$('createModal').hidden) closeCreate(); if (!$('deleteModal').hidden) closeDelete(); }
+  if (e.key !== 'Escape') return;
+  if (!$('createModal').hidden)    closeCreate();
+  if (!$('deleteModal').hidden)    closeDelete();
+  if (!$('adminAuthModal').hidden) closeAdminAuth();
+  if (!$('restoreModal').hidden)   closeRestore();
 });
 document.addEventListener('visibilitychange', function () {
   // 再表示時に即座に1回取得する (§FR-07)

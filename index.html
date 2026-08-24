@@ -17,6 +17,11 @@
     <span id="clock" class="clock">--:--</span>
     <span id="status" class="status"></span>
   </div>
+  <!-- 管理モードのときだけ現れる。参加者に渡した端末で見分けられるようにする。 -->
+  <div id="adminBar" class="hd-row admin-bar" hidden>
+    <button id="adminExit" class="badge" type="button">管理モード（終了する）</button>
+    <button id="restoreBtn" class="btn-icon" type="button">削除履歴</button>
+  </div>
 </header>
 
 <nav id="tabs" class="tabs"></nav>
@@ -62,6 +67,35 @@
     <div class="actions">
       <button id="deleteCancel" class="btn-sub" type="button">閉じる</button>
       <button id="deleteOk" class="btn-danger" type="button">キャンセルする</button>
+    </div>
+  </div>
+</div>
+
+<!-- 管理パスワードの入力 -->
+<div id="adminAuthModal" class="overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="adminAuthTitle">
+    <h2 id="adminAuthTitle">管理モード</h2>
+    <p class="target">主催者用</p>
+    <label for="adminPw">管理パスワード</label>
+    <input id="adminPw" type="password" autocomplete="off" enterkeyhint="done">
+    <p class="note">ハイフンと大文字小文字は無視されます。<br>このタブを閉じるまで保持されます。</p>
+    <p id="adminAuthError" class="err" hidden></p>
+    <div class="actions">
+      <button id="adminAuthCancel" class="btn-sub" type="button">閉じる</button>
+      <button id="adminAuthOk" class="btn-main" type="button">確認</button>
+    </div>
+  </div>
+</div>
+
+<!-- 削除履歴からの復元 -->
+<div id="restoreModal" class="overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="restoreTitle">
+    <h2 id="restoreTitle">削除した予約</h2>
+    <p class="target">管理モードで削除した分のみ</p>
+    <div id="restoreList" class="restore-list"></div>
+    <p id="restoreError" class="err" hidden></p>
+    <div class="actions">
+      <button id="restoreClose" class="btn-sub" type="button">閉じる</button>
     </div>
   </div>
 </div>
