@@ -437,6 +437,9 @@ tools/localdev.sh       ローカル検証環境をワンコマンドで起動�
 tools/devserver.py      ローカルPG に対する PostgREST 互換ミニサーバ（開発専用）
 ```
 
+> ⚠️ **`sql/test_acceptance.sh` を Supabase に対して実行してはならない。**
+> このスクリプトは**ローカルPG専用**である。冒頭で `grant select, insert, update, delete on all tables in schema public to anon` を実行して Supabase 相当の権限を再現し、時刻依存テストのために `session_date = current_date` のスロットを3件挿入する。末尾に後片付けがない。本番に流すと anon の権限を広げ、画面に存在しない日付のタブが生える。ローカル（`tools/localdev.sh`）に対してのみ使うこと。
+
 `tools/` は **Supabase を用意する前に手元で画面を確認するための開発専用ツール**であり、GitHub Pages には配置しない。不要なら削除してよい。使い方:
 
 ```
@@ -529,6 +532,11 @@ from (values ('2026-09-01'::date), ('2026-09-02'::date)) as s(d),
 | RPC 経由の予約作成・キャンセル | ✅ anon 相当の publishable key で `create_reservation` / `cancel_reservation` の正常系・`INVALID_PIN`・`DUPLICATE_IN_SLOT` を実測で確認 |
 | `reservation_secrets` の秘匿 | ✅ DB に行が存在する状態で anon から `GET /rest/v1/reservation_secrets` を叩き、`[]` が返ることを確認（RLS による遮断であることを、管理者権限での行数照会と突き合わせて確定） |
 | `reservations` への直接 INSERT | ✅ anon からの直接 INSERT は HTTP 401 / `42501` で拒否されることを確認 |
+| 基準2/13/14（上限・表記ゆれ・セッション境界） | ✅ anon から `Bチーム` / `Ｂチーム` / `bチーム` の3表記で予約し、単一の `group_key`（`bチーム`）に統合されること、9/1 22:00 と 9/2 01:00 が同一セッションと判定されること、3枠目が `LIMIT_EXCEEDED` になることを確認 |
+| 基準5（anon の直接 DELETE / UPDATE） | ✅ 1行も変化しないことを確認。ただし **PostgREST は HTTP 204 を返す**（RLS で対象行が見えず空振りするため）。エラーにはならないが実害はない |
+| `NO_SUCH_SLOT` | ✅ slots に存在しない時刻を指定すると `NO_SUCH_SLOT` が返ることを確認 |
+| UI からの予約・キャンセル（GitHub Pages 本番） | ✅ 公開URL上でセルのタップ→予約→誤PINで「PINが違います」→正PINでキャンセル、の全経路を実測。コンソールエラーなし、CSP 違反なし |
+| `PAST_SLOT` / `TOO_LATE` | ⏸ 時刻依存のため本番では未実施（過去スロットや30分以内のスロットを本番に挿入する必要があるため）。ローカルの `test_acceptance.sh` で検証済み |
 
 **引き続き未検証の項目**:
 
