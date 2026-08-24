@@ -15,7 +15,7 @@ create table rooms (
 );
 
 -- 予約可能スロット（主催者が事前に投入） -----------------------------
--- session_date はその晩の開始日（JST）。22:00〜翌07:00 が1セッション。
+-- session_date はその晩の開始日（JST）。22:00〜翌08:00 が1セッション。
 create table slots (
   start_at     timestamptz primary key,
   session_date date not null,

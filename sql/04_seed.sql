@@ -13,11 +13,11 @@ insert into rooms (id, name, sort_order) values
   (4, '部屋4', 4),
   (5, '部屋5', 5);
 
--- 22時〜30時(=翌6時)開始の9スロット × 2セッション = 18行
+-- 22時〜31時(=翌7時)開始の10スロット × 2セッション = 20行
 --   session_date はその晩の開始日。9/2 22:00 も 9/3 03:00 も 2026-09-02。
 --   (timestamp) at time zone 'Asia/Tokyo' で JST の壁時計時刻を
 --   timestamptz (UTC) に正しく変換する。
 insert into slots (start_at, session_date)
 select (d + make_interval(hours => h)) at time zone 'Asia/Tokyo', d
 from (values ('2026-09-02'::date), ('2026-09-03'::date)) as s(d),
-     generate_series(22, 30) as h;
+     generate_series(22, 31) as h;
