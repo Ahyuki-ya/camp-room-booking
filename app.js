@@ -76,6 +76,7 @@ var MESSAGES = {
   PAST_SLOT:          'この時間帯はすでに開始しています',
   NO_SUCH_SLOT:       'この時間帯は予約対象外です',
   NO_SUCH_ROOM:       'その部屋は存在しません',
+  ROOM_LOCKED:        'この部屋はまだ予約できません。左の部屋から順にお使いください',
   TOO_LATE:           '開始30分前を過ぎたためキャンセルできません',
   INVALID_GROUP_NAME: 'グループ名は1〜30文字で入力してください',
   INVALID_ADMIN_PASSWORD: '管理パスワードが違います',
@@ -89,7 +90,7 @@ var MESSAGES = {
 var REFETCH_ON = {
   SLOT_TAKEN: 1, DUPLICATE_IN_SLOT: 1, PAST_SLOT: 1,
   NO_SUCH_SLOT: 1, NO_SUCH_ROOM: 1, TOO_LATE: 1,
-  NO_SUCH_RESERVATION: 1
+  NO_SUCH_RESERVATION: 1, ROOM_LOCKED: 1
 };
 
 function messageFor(code, context) {
@@ -282,11 +283,15 @@ function renderGrid() {
   mine.forEach(function (slot) {
     var tr = el('tr');
     tr.appendChild(el('td', 'tcell', slotLabel(slot)));
-    rooms.forEach(function (rm) {
+    rooms.forEach(function (rm, idx) {
       var td = el('td');
       var res = byCell[rm.id + '@' + slot.ms];
       var isPast = slot.ms <= now;
       var isLocked = (slot.ms - CANCEL_CUTOFF_MS) <= now;
+      // 左から順に埋めてもらう (FR-08)。3列目以降は、同じ枠で左隣の部屋が
+      // 予約されるまで開かない。1・2列目は常に開いている。
+      // rooms は sort_order 順に取得しているので、添字がそのまま並び順になる。
+      var isBlocked = idx >= 2 && !byCell[rooms[idx - 1].id + '@' + slot.ms];
       var btn = el('button');
       btn.type = 'button';
 
@@ -307,6 +312,13 @@ function renderGrid() {
         btn.className = 'cell past';
         btn.textContent = '—';
         btn.disabled = true;
+      } else if (isBlocked) {
+        // 押せなくすると理由が伝わらないので、押したら説明を出す
+        btn.className = 'cell blocked';
+        btn.textContent = '−';
+        btn.addEventListener('click', function () {
+          toast(rooms[idx - 1].name + ' が予約されると開きます');
+        });
       } else {
         btn.className = 'cell free';
         btn.textContent = '空';

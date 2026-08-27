@@ -29,11 +29,16 @@
 <main>
   <div id="grid" class="grid-wrap"></div>
   <ul class="legend">
-    <li><span class="chip free"></span>空き（タップで予約）</li>
-    <li><span class="chip taken"></span>予約済み（タップでキャンセル）</li>
-    <li><span class="chip locked"></span>予約済み・キャンセル期限切れ</li>
-    <li><span class="chip past"></span>終了（操作不可）</li>
+    <li><span class="chip free"></span>空き</li>
+    <li><span class="chip taken"></span>予約済み</li>
+    <li><span class="chip locked"></span>期限切れ</li>
+    <li><span class="chip blocked"></span>未開放</li>
+    <li><span class="chip past"></span>終了</li>
   </ul>
+  <p class="legend-note">
+    空きをタップで予約、予約済みをタップでキャンセル。<br>
+    期限切れは開始30分前を過ぎた予約。未開放は左の部屋が埋まると開きます。
+  </p>
 </main>
 
 <!-- 予約モーダル -->

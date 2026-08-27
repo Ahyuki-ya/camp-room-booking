@@ -34,6 +34,8 @@ declare
   v_session_date date;
   v_id           uuid;
   v_constraint   text;
+  v_sort         smallint;
+  v_left_id      smallint;
 begin
   -- 1. PIN 形式（クライアント検証を信用しない）
   if p_pin is null or p_pin !~ '^[0-9]{4}$' then
@@ -56,6 +58,27 @@ begin
   -- 4. 開始済みスロットの拒否（UIのグレーアウトを迂回させない）
   if p_start_at <= now() then
     raise exception using errcode = 'P0001', message = 'PAST_SLOT';
+  end if;
+
+  -- 4b. 左から順に埋めてもらう (FR-08)。左に2部屋以上ある部屋（＝3番目以降）
+  --     は、同じ枠で左隣が予約されるまで開かない。画面側でも塞いでいるが、
+  --     UIのグレーアウトを迂回させないため DB でも検査する。
+  --
+  --     並び順は sort_order を基準にし、連番でなくても機能するように
+  --     「sort_order がひとつ下の部屋」を引いている。
+  select r.sort_order into v_sort from rooms r where r.id = p_room_id;
+  if not found then
+    raise exception using errcode = 'P0001', message = 'NO_SUCH_ROOM';
+  end if;
+
+  select r.id into v_left_id
+    from rooms r where r.sort_order < v_sort
+   order by r.sort_order desc limit 1;
+
+  if (select count(*) from rooms r where r.sort_order < v_sort) >= 2
+     and not exists (select 1 from reservations x
+                      where x.start_at = p_start_at and x.room_id = v_left_id) then
+    raise exception using errcode = 'P0001', message = 'ROOM_LOCKED';
   end if;
 
   -- 5. 正規化キー。生成列 group_key と同一の式でなければならない。

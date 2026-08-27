@@ -146,6 +146,13 @@ table.grid td.tcell {
 .cell.taken  { background: var(--surface-2); border-left-color: var(--edge); color: var(--text); font-weight: 600; cursor: pointer; }
 /* 予約済みだがキャンセル期限切れ: 同じ面だが縁を鈍らせ、文字も締めない */
 .cell.locked { background: var(--surface-2); border-left-color: var(--faint); color: var(--muted); cursor: pointer; }
+/* 未開放: 左の部屋がまだ埋まっていないため予約できない (FR-08)。
+   斜線で「今は使えない」ことを示す。タップすると理由を出すので押せる扱い。 */
+.cell.blocked {
+  background: repeating-linear-gradient(-45deg,
+                transparent 0 5px, var(--line) 5px 6px), var(--bg);
+  color: var(--faint); border-left-color: transparent; cursor: pointer;
+}
 /* 終了: 触れない。面は空きより沈めるが予約済みほど濃くせず、
    左の帯を消すことで「押せない」ことを空きと区別する。 */
 .cell.past   { background: var(--surface); color: var(--faint); border-left-color: transparent; cursor: default; }
@@ -153,11 +160,20 @@ table.grid td.tcell {
 .cell.taken:active, .cell.locked:active { background: var(--line); }
 
 /* ---- 凡例 ---- */
+/* 表と左端を揃えるため、横方向は margin ではなく padding で内側に寄せる。
+   560px 以上では max-width と auto margin が効くので、margin だと揃わない。 */
 .legend {
-  list-style: none; margin: 16px 14px 0; padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 9px 10px;
+  list-style: none; margin: 16px 0 0; padding: 0 14px;
   font-size: 12px; color: var(--muted);
 }
-.legend li { display: flex; align-items: center; gap: 9px; margin-bottom: 7px; }
+.legend li { display: flex; align-items: center; gap: 7px; margin: 0; }
+.legend-note {
+  margin: 12px 0 0; padding: 0 14px;
+  font-family: var(--sans); font-size: 11px; color: var(--muted); line-height: 1.7;
+}
 /* セルと同じ見え方にする。帯の有無と色が状態の手がかりなので、
    帯を省略せず「終了」だけ面と同色にして帯が無いことを示す。 */
 .chip {
@@ -167,6 +183,11 @@ table.grid td.tcell {
 .chip.free   { background: var(--bg);        border-left: 3px solid var(--line); }
 .chip.taken  { background: var(--surface-2); border-left: 3px solid var(--edge); }
 .chip.locked { background: var(--surface-2); border-left: 3px solid var(--faint); }
+.chip.blocked {
+  background: repeating-linear-gradient(-45deg,
+                transparent 0 4px, var(--line) 4px 5px), var(--bg);
+  border-left: 3px solid transparent;
+}
 .chip.past   { background: var(--surface);   border-left: 3px solid var(--surface); }
 
 /* ---- モーダル ---- */
@@ -230,7 +251,7 @@ table.grid td.tcell {
   table.grid thead th { font-size: 12px; }
   table.grid td.tcell { font-size: 12px; }
   table.grid th.tcol { width: 64px; }
-  .grid-wrap, .tabs, .legend { max-width: 720px; margin-left: auto; margin-right: auto; }
+  .grid-wrap, .tabs, .legend, .legend-note { max-width: 720px; margin-left: auto; margin-right: auto; }
 }
 
 /* ---- 管理モード (§14) ---- */
