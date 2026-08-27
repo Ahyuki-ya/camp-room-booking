@@ -23,7 +23,9 @@ create table if not exists deleted_reservations (
   start_at     timestamptz not null,
   session_date date        not null,
   group_name   text        not null,
-  pin_hash     text        not null,
+  -- 訂正で追加した記録には PIN が無い（§15）。not null にすると、そうした
+  -- 行を管理削除したときに退避に失敗して削除だけが通ってしまう。
+  pin_hash     text,
   device_id    uuid,
   created_at   timestamptz not null,
   deleted_at   timestamptz not null default now()
@@ -108,7 +110,7 @@ begin
   select r.id, r.room_id, r.start_at, r.session_date, r.group_name,
          s.pin_hash, d.device_id, r.created_at
     from reservations r
-    join reservation_secrets s on s.reservation_id = r.id
+    left join reservation_secrets s on s.reservation_id = r.id
     left join reservation_devices d on d.reservation_id = r.id
    where r.id = p_id
   on conflict (id) do update set
@@ -162,8 +164,11 @@ begin
       raise exception using errcode = 'P0001', message = 'NO_SUCH_SLOT';
   end;
 
-  insert into reservation_secrets (reservation_id, pin_hash)
-  values (v_row.id, v_row.pin_hash);
+  -- PIN が無い記録（訂正で追加した分）は secrets を作らない
+  if v_row.pin_hash is not null then
+    insert into reservation_secrets (reservation_id, pin_hash)
+    values (v_row.id, v_row.pin_hash);
+  end if;
 
   if v_row.device_id is not null then
     insert into reservation_devices (reservation_id, device_id, session_date)

@@ -81,6 +81,8 @@ var MESSAGES = {
   INVALID_ADMIN_PASSWORD: '管理パスワードが違います',
   NO_SUCH_RESERVATION:    'その予約は見つかりません。すでに削除されている可能性があります',
   NO_SUCH_DELETED:        'その削除済み予約は見つかりません',
+  RECORD_FROZEN:          '開始時刻を過ぎた記録は固定されています。訂正には理由の記録が必要です',
+  REASON_REQUIRED:        '訂正には理由の入力が必要です',
   NETWORK:            '通信に失敗しました。再度お試しください'
 };
 // 受信したらグリッドを即再取得すべきコード (§10 の「追加動作」)
