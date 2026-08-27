@@ -1,0 +1,100 @@
+-- =====================================================================
+-- 一般公開前の初期化 / 要件定義書 v2 §16
+-- 実行順: 01 -> ... -> 06 -> 07
+--
+-- 準備期間中のテストデータを、URL を一般公開する時刻に自動で消す。
+-- pg_cron でDB内から実行するため、誰かの端末が起動している必要はない。
+-- =====================================================================
+
+create extension if not exists pg_cron;
+
+-- ---------------------------------------------------------------------
+-- 実際の初期化処理。内部専用。
+-- 時刻の判定は呼び出し側が行う（この関数を分けているのは、時刻を待たずに
+-- 巻き戻し前提で動作確認できるようにするため）。
+-- ---------------------------------------------------------------------
+create or replace function do_launch_reset()
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare v_res int; v_del int; v_led int;
+begin
+  -- 凍結トリガー(§15)を通すための理由。開始時刻を過ぎた予約が残っていても
+  -- 消せるようにする。この時点では消す対象がテストデータのみである前提。
+  perform set_config('app.amend_reason', '一般公開前の初期化', true);
+
+  delete from reservations;            -- secrets / devices は cascade で消える
+  get diagnostics v_res = row_count;
+
+  delete from deleted_reservations;
+  get diagnostics v_del = row_count;
+
+  -- 台帳は追記専用トリガーで守られている(§15.3)。初期化のときだけ外す。
+  -- 所有者権限でしか外せないため、anon からこの経路には到達できない。
+  alter table reservation_ledger disable trigger trg_ledger_append_only;
+  alter table reservation_ledger disable trigger trg_ledger_no_truncate;
+  delete from reservation_ledger;
+  get diagnostics v_led = row_count;
+  alter table reservation_ledger enable trigger trg_ledger_append_only;
+  alter table reservation_ledger enable trigger trg_ledger_no_truncate;
+
+  return format('予約 %s件 / 退避表 %s件 / 台帳 %s件 を削除', v_res, v_del, v_led);
+end;
+$$;
+
+-- ---------------------------------------------------------------------
+-- cron から毎分呼ばれる入口。目標時刻に達するまで何もしない。
+--
+-- cron 式ではなく関数側で時刻を判定しているのは、cron.timezone の解釈を
+-- 取り違えた場合に早発して本番データを消すのを防ぐため。毎分走らせて
+-- おけば、タイムゾーンの解釈がどうであれ目標時刻の1分以内に実行される。
+-- ---------------------------------------------------------------------
+create or replace function reset_before_launch()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  -- URL を一般公開する時刻。ここを変えれば初期化の時刻が変わる。
+  v_target constant timestamptz := timestamptz '2026-09-02 14:00+09';
+  v_msg text;
+begin
+  if now() < v_target then
+    return;
+  end if;
+
+  v_msg := do_launch_reset();
+  raise notice '一般公開前の初期化を実行: %', v_msg;
+
+  -- 二度と走らないように自分の予約を解除する
+  begin
+    perform cron.unschedule('reset-before-launch');
+  exception when others then
+    raise notice '解除済み、または解除に失敗: %', sqlerrm;
+  end;
+end;
+$$;
+
+-- ---------------------------------------------------------------------
+-- 権限。anon / authenticated からは呼べないようにする。
+-- Supabase は public スキーマの新規関数に EXECUTE を自動付与する(§14.4)。
+-- ---------------------------------------------------------------------
+revoke all on function do_launch_reset()      from public, anon, authenticated;
+revoke all on function reset_before_launch()  from public, anon, authenticated;
+
+-- ---------------------------------------------------------------------
+-- 毎分の実行を登録する。すでに登録済みなら作り直す。
+-- ---------------------------------------------------------------------
+do $$
+begin
+  begin
+    perform cron.unschedule('reset-before-launch');
+  exception when others then
+    null;  -- 未登録なら何もしない
+  end;
+  perform cron.schedule('reset-before-launch', '* * * * *',
+                        'select public.reset_before_launch()');
+end $$;

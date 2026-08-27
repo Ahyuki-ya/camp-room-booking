@@ -325,6 +325,39 @@ function render() {
   $('clock').textContent = hhmm(serverNow()) + ' JST';
   renderTabs();
   renderGrid();
+  scheduleStateTick();
+}
+
+// セルが押せるかどうかは時刻で変わる（開始済み -> 操作不可、開始30分前 ->
+// キャンセル不可）。再取得のタイミングでしか描き直さないと、ポーリング間隔の
+// あいだ開始済みの枠が押せるまま残る。サーバが弾くので実害はないが、参加者に
+// はエラーとして見える。次に状態が変わる瞬間を求めて、そこで描き直す。
+var stateTimer = null;
+
+function scheduleStateTick() {
+  if (stateTimer) { clearTimeout(stateTimer); stateTimer = null; }
+  if (!booted) return;
+
+  var now = serverNow();
+  var next = Infinity;
+  slots.forEach(function (s) {
+    var bounds = [s.ms, s.ms - CANCEL_CUTOFF_MS];
+    for (var i = 0; i < bounds.length; i++) {
+      if (bounds[i] > now && bounds[i] < next) next = bounds[i];
+    }
+  });
+
+  // 境界が遠くても60秒ごとには見直す。端末のスリープや時計のずれの保険。
+  var wait = Math.min(next - now + 500, 60000);
+  if (!(wait >= 500)) wait = 60000;
+
+  stateTimer = setTimeout(function () {
+    stateTimer = null;
+    // モーダルを開いている間に描き直すと操作中の画面が入れ替わる。
+    // 描き直さずに次の見直しだけ予約する。
+    if (modalOpen) { scheduleStateTick(); return; }
+    render();
+  }, wait);
 }
 
 // --- 予約モーダル ---------------------------------------------------
