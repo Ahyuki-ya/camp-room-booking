@@ -625,6 +625,7 @@ v1 で `【要確認】` としていた項目は、2026-08-23 にすべて確�
 | 11 | 端末単位の保有上限 | **1セッション（1晩）あたり2枠。グループ名上限と併用**。`localStorage` の UUID で識別し、回避可能であることを許容する | 2026-08-24 |
 | 12 | 主催者の管理手段 | **画面内の管理モード**（`#admin`）＋管理パスワード。削除は**論理削除**とし復元できる | 2026-08-24 |
 | 13 | 過去記録の扱い | **開始時刻を過ぎた行はトリガーで凍結**。訂正は理由必須の専用RPC経由のみとし、追記型の台帳に必ず残す。申請の根拠は**予約の記録**とし、実使用の記録は別途持たない | 2026-08-27 |
+| 14 | 訂正用の画面 | **作らない**。訂正はダッシュボードの SQL Editor から訂正RPCを呼ぶ（§15.5） | 2026-08-27 |
 
 ### v1 からの主な仕様変更
 
@@ -768,7 +769,39 @@ revoke all on function admin_check(text) from public, anon, authenticated;
 
 各訂正 RPC は**処理を終えたら明示的に空へ戻す**（`admin_end_amend`）。PostgREST は1リクエスト＝1トランザクションなので通常は問題にならないが、複数の操作を1トランザクションに束ねられた場合に、最初の理由が2件目以降に流用されるのを防ぐ。
 
-### 15.5 受け入れたリスク
+### 15.5 訂正の手順（画面を作らない場合）
+
+訂正用の画面は用意していない（§13 決定事項 #14）。合宿後に申請用の訂正が必要になったら、Supabase ダッシュボードの SQL Editor から訂正 RPC を呼ぶ。RPC を経由すればパスワードの照合と理由の必須チェックが働き、台帳にも残る。
+
+対象の `id` を調べる:
+
+```sql
+select id, group_name, room_id,
+       (start_at at time zone 'Asia/Tokyo')::text as jst
+  from reservations
+ where session_date = '2026-09-02'
+ order by start_at, room_id;
+```
+
+使用者名を直す / 使わなかった記録を外す / 予約せず使われた分を足す:
+
+```sql
+select admin_amend_group_name('<id>', '正しいグループ名', '当日部屋を交換したため', '<管理パスワード>');
+select admin_amend_remove('<id>', '実際には使用しなかったため', '<管理パスワード>');
+select admin_amend_add(3::smallint, timestamptz '2026-09-02 22:00+09',
+                       'グループ名', '予約せず使用したため', '<管理パスワード>');
+```
+
+台帳を確認する:
+
+```sql
+select occurred_at, action, reason, before_row, after_row
+  from reservation_ledger order by occurred_at desc, id desc;
+```
+
+**生の SQL で直接書き換えてはならない。** 凍結トリガーが `RECORD_FROZEN` で拒否する。どうしても一括で処理する必要がある場合のみ、1トランザクション内で `set_config('app.amend_reason', '<理由>', true)` を立ててから DML を実行する。この場合も台帳には残る。
+
+### 15.6 受け入れたリスク
 
 **訂正 RPC は anon key で誰でも呼べる面に増える。** 管理パスワードを破られた場合の被害が「今の予約を消される（復元可）」から「**過去の記録を捏造される**」に広がる。申請の根拠を守るという目的に対して、これは無視できないトレードオフである。
 
