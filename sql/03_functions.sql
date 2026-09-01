@@ -60,9 +60,10 @@ begin
     raise exception using errcode = 'P0001', message = 'PAST_SLOT';
   end if;
 
-  -- 4b. 左から順に埋めてもらう (FR-08)。左に2部屋以上ある部屋（＝3番目以降）
-  --     は、同じ枠で左隣が予約されるまで開かない。画面側でも塞いでいるが、
-  --     UIのグレーアウトを迂回させないため DB でも検査する。
+  -- 4b. 左から順に埋めてもらう (FR-08)。左に3部屋以上ある部屋（＝4番目以降）
+  --     は、同じ枠で左隣が予約されるまで開かない。最初の3部屋は常に開いて
+  --     いる。画面側でも塞いでいるが、UIのグレーアウトを迂回させないため
+  --     DB でも検査する。
   --
   --     並び順は sort_order を基準にし、連番でなくても機能するように
   --     「sort_order がひとつ下の部屋」を引いている。
@@ -75,7 +76,7 @@ begin
     from rooms r where r.sort_order < v_sort
    order by r.sort_order desc limit 1;
 
-  if (select count(*) from rooms r where r.sort_order < v_sort) >= 2
+  if (select count(*) from rooms r where r.sort_order < v_sort) >= 3
      and not exists (select 1 from reservations x
                       where x.start_at = p_start_at and x.room_id = v_left_id) then
     raise exception using errcode = 'P0001', message = 'ROOM_LOCKED';

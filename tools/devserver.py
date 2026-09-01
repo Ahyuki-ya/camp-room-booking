@@ -2,7 +2,7 @@
 """検証用の PostgREST 互換ミニサーバ。ローカルPGに psql 経由で問い合わせる。
 プロジェクトのファイルは書き換えず、config.js と index.html の CSP だけ
 配信時に差し替える。"""
-import http.server, json, subprocess, urllib.parse, os, sys
+import http.server, json, re, subprocess, urllib.parse, os, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PSQL = ["psql", "-h", "127.0.0.1", "-p", "55432", "-U", "postgres", "-d", "camp", "-tA", "-q"]
@@ -50,7 +50,9 @@ class H(http.server.SimpleHTTPRequestHandler):
         # 配信時のみ差し替える（プロジェクトのファイルは無変更）
         if path in ("/", "/index.html"):
             html = open(os.path.join(ROOT, "index.html"), encoding="utf-8").read()
-            html = html.replace("connect-src https://YOUR-PROJECT-REF.supabase.co", "connect-src 'self'")
+            # connect-src の中身は本番の Supabase ホストなので、宛先を問わず
+            # 'self' に潰す（プレースホルダ固定で置換すると実URLを書いた後に効かなくなる）。
+            html = re.sub(r"connect-src https://[^;\"]+", "connect-src 'self'", html, count=1)
             return self._send(200, html, "text/html; charset=utf-8")
         if path == "/config.js":
             return self._send(200,

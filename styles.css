@@ -1,5 +1,7 @@
 /* 合宿 部屋予約システム / 要件定義書 v2 §9
-   スマホ縦持ちで5列が横スクロールなしに収まることを最優先にする。
+   スマホ縦持ちで7列が横スクロールなしに収まることを最優先にする。
+   列が5から7に増えた分、狭い画面では左右の余白（--gutter）と時刻列を
+   詰めて1列あたりの幅を稼いでいる。
 
    配色と質感は https://ahyuki-ya.github.io/relationship/ に合わせた。
    ・ほぼ白の背景に、グレーの階調だけで面を作る
@@ -13,6 +15,10 @@
 :root {
   color-scheme: light;
 
+  /* 表と、その下に続く要素の左右の余白。表の列幅に直結するので
+     1箇所で持つ。560px 以上では広げる。 */
+  --gutter: 10px;
+
   --bg:         #fbfbfd;
   --surface:    #f1f1f6;
   --surface-2:  #e6e6ee;
@@ -20,7 +26,7 @@
   --muted:      #6b6b7a;
   --faint:      #c6c6d2;
   --line:       #d9d9e2;
-  /* 表の罫線だけは本文と同じ黒にする。5列×10行の密なグリッドでは、
+  /* 表の罫線だけは本文と同じ黒にする。7列×10行の密なグリッドでは、
      面の濃淡よりも罫線のコントラストの方が読み取りやすさに効くため、
      ここだけ参考サイトの淡いトーンから意図的に外している。 */
   --grid-line:  #16161c;
@@ -79,7 +85,7 @@ body {
 .btn-icon:disabled { opacity: .45; }
 
 /* ---- セッションタブ ---- */
-.tabs { display: flex; gap: 8px; padding: 12px 14px; }
+.tabs { display: flex; gap: 8px; padding: 12px var(--gutter); }
 .tabs button {
   flex: 1; padding: 11px 4px; font: inherit; font-size: 14px; cursor: pointer;
   background: var(--surface); color: var(--muted);
@@ -93,7 +99,7 @@ body {
 }
 
 /* ---- グリッド ---- */
-.grid-wrap { padding: 0 14px; }
+.grid-wrap { padding: 0 var(--gutter); }
 /* overflow:hidden で角を丸めると、その要素がスクロールコンテナ扱いになり
    thead の position:sticky が効かなくなる。角は四隅のセルに個別に付ける。 */
 table.grid {
@@ -117,14 +123,14 @@ table.grid tbody tr:last-child td:last-child .cell { border-bottom-right-radius:
 
 table.grid thead th {
   font-family: var(--sans);
-  font-size: 11px; font-weight: 600; color: var(--muted);
-  letter-spacing: .04em;
+  font-size: 10.5px; font-weight: 600; color: var(--muted);
+  letter-spacing: .02em;
   padding: 7px 1px; background: var(--surface);
   /* ヘッダーの高さは端末の文字サイズ設定で変わる。app.js が実測して
      --hd-h に入れる。取れなかった場合の保険として既定値を置く。 */
   position: sticky; top: var(--hd-h, 64px); z-index: 3;
 }
-table.grid th.tcol { width: 48px; }
+table.grid th.tcol { width: 44px; }
 table.grid td.tcell {
   font-family: var(--sans);
   font-size: 11px; color: var(--muted); text-align: center;
@@ -135,7 +141,7 @@ table.grid td.tcell {
 .cell {
   display: block; width: 100%; min-height: 46px;
   border: 0; border-left: 3px solid transparent;
-  padding: 4px 3px; font: inherit; font-size: 11.5px;
+  padding: 4px 2px; font: inherit; font-size: 11px;
   color: var(--text); background: transparent;
   overflow: hidden; text-overflow: ellipsis;
   word-break: break-all; line-height: 1.3;
@@ -166,12 +172,12 @@ table.grid td.tcell {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   gap: 9px 10px;
-  list-style: none; margin: 16px 0 0; padding: 0 14px;
+  list-style: none; margin: 16px 0 0; padding: 0 var(--gutter);
   font-size: 12px; color: var(--muted);
 }
 .legend li { display: flex; align-items: center; gap: 7px; margin: 0; }
 .legend-note {
-  margin: 12px 0 0; padding: 0 14px;
+  margin: 12px 0 0; padding: 0 var(--gutter);
   font-family: var(--sans); font-size: 11px; color: var(--muted); line-height: 1.7;
 }
 /* セルと同じ見え方にする。帯の有無と色が状態の手がかりなので、
@@ -246,13 +252,59 @@ table.grid td.tcell {
 .empty { color: var(--muted); text-align: center; padding: 44px 20px; font-size: 14px; }
 
 @media (min-width: 560px) {
+  :root { --gutter: 14px; }
   body { font-size: 16px; }
   .cell { font-size: 13px; min-height: 52px; }
   table.grid thead th { font-size: 12px; }
   table.grid td.tcell { font-size: 12px; }
   table.grid th.tcol { width: 64px; }
-  .grid-wrap, .tabs, .legend, .legend-note { max-width: 720px; margin-left: auto; margin-right: auto; }
+  .grid-wrap, .tabs, .legend, .legend-note, .gear {
+    max-width: 720px; margin-left: auto; margin-right: auto;
+  }
 }
+
+/* ---- スタジオの機材 (§17) ---- */
+/* 予約とは別の情報なので、上に境界線を引いて面を切り替える。
+   表と左端を揃えるため、横方向は表と同じ --gutter で内側に寄せる。 */
+.gear {
+  margin: 28px 0 0; padding: 22px var(--gutter) 0;
+  border-top: 1px solid var(--line);
+}
+.gear-title { font-size: 15px; font-weight: 600; margin: 0 0 12px; letter-spacing: .04em; }
+.gear-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.gear-tab {
+  flex: 1 1 auto; min-width: 40px;
+  padding: 9px 4px; font-family: var(--sans); font-size: 13px; cursor: pointer;
+  background: var(--surface); color: var(--muted);
+  border: none; border-radius: 8px; letter-spacing: .04em;
+  transition: background .15s, color .15s;
+}
+/* 選択中はセッションタブと同じ「濃い面 + 紺のアウトライン」で示す。 */
+.gear-tab.on {
+  background: var(--surface-2); color: var(--text); font-weight: 600;
+  outline: 1px solid var(--edge); outline-offset: -1px;
+}
+.gear-card { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.gear-head {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 11px 14px; background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.gear-room { font-size: 16px; font-weight: 600; letter-spacing: .04em; }
+.gear-size { font-family: var(--sans); font-size: 11.5px; color: var(--muted); }
+/* dt/dd を2列に並べる。ラベルは「ギターアンプ」が1行に収まる幅で固定し、
+   機材名の頭を揃える。 */
+.gear-list { display: grid; grid-template-columns: 92px 1fr; margin: 0; }
+.gear-list dt, .gear-list dd {
+  margin: 0; padding: 9px 6px; border-top: 1px solid var(--line);
+}
+.gear-list dt:first-of-type, .gear-list dt:first-of-type + dd { border-top: none; }
+.gear-list dt {
+  padding-left: 14px;
+  font-family: var(--sans); font-size: 11px; color: var(--muted);
+  letter-spacing: .02em; line-height: 1.5; align-self: center; white-space: nowrap;
+}
+.gear-list dd { padding-right: 14px; font-size: 13.5px; line-height: 1.5; }
 
 /* ---- 管理モード (§14) ---- */
 /* 参加者に端末を渡したときに気づけるよう、地の色を変えて明示する。 */

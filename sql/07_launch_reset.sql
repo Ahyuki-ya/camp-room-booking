@@ -4,6 +4,10 @@
 --
 -- 準備期間中のテストデータを、URL を一般公開する時刻に自動で消す。
 -- pg_cron でDB内から実行するため、誰かの端末が起動している必要はない。
+--
+-- 削除と同じトランザクションで、主催者が押さえておく固定枠
+-- （PA講習会 / B2 / 9/3 22:00〜24:00）を投入する（§16.6）。
+-- 別々に実行すると、その隙間に参加者が同じ枠を取れてしまう。
 -- =====================================================================
 
 create extension if not exists pg_cron;
@@ -17,9 +21,21 @@ create or replace function do_launch_reset()
 returns text
 language plpgsql
 security definer
-set search_path = public
+-- crypt() / gen_salt() が extensions スキーマにあるため（§8 と同じ理由）。
+-- 固定枠の PIN を作るのに必要。
+set search_path = public, extensions
 as $$
-declare v_res int; v_del int; v_led int;
+declare
+  -- 主催者が押さえておく固定枠（§16.6）。増減はこの3つを書き換える。
+  v_fixed_room  constant text        := 'B2大';
+  v_fixed_name  constant text        := 'PA講習会';
+  v_fixed_slots constant timestamptz[] := array[
+    timestamptz '2026-09-03 22:00+09',
+    timestamptz '2026-09-03 23:00+09'
+  ];
+  v_res int; v_del int; v_led int; v_fix int := 0;
+  v_room_id smallint;
+  v_pin     text;
 begin
   -- 凍結トリガー(§15)を通すための理由。開始時刻を過ぎた予約が残っていても
   -- 消せるようにする。この時点では消す対象がテストデータのみである前提。
@@ -40,7 +56,39 @@ begin
   alter table reservation_ledger enable trigger trg_ledger_append_only;
   alter table reservation_ledger enable trigger trg_ledger_no_truncate;
 
-  return format('予約 %s件 / 退避表 %s件 / 台帳 %s件 を削除', v_res, v_del, v_led);
+  -- 固定枠の投入（§16.6）。削除と同一トランザクションなので、
+  -- 「消えた瞬間から埋まっている」状態になり、割り込まれる隙間がない。
+  --
+  -- PIN はその場で作った乱数で、誰にも渡さない。参加者に消されては困る枠
+  -- だからである。主催者が取り消すときは管理モード（§14）から削除する。
+  select r.id into v_room_id from rooms r where r.name = v_fixed_room;
+  if v_room_id is null then
+    -- 部屋名を変えたときに気づけるようにする。ここで例外にすると初期化
+    -- そのものが巻き戻り、毎分の再試行を繰り返して永久に完了しない。
+    raise warning '固定枠を投入できない: 部屋「%」が rooms に無い', v_fixed_room;
+  else
+    v_pin := lpad((floor(random() * 10000))::int::text, 4, '0');
+    with ins as (
+      insert into reservations (room_id, start_at, session_date, group_name)
+      select v_room_id, s.start_at, s.session_date, v_fixed_name
+        from slots s
+       where s.start_at = any (v_fixed_slots)
+      on conflict do nothing
+      returning id
+    )
+    insert into reservation_secrets (reservation_id, pin_hash)
+    select i.id, crypt(v_pin, gen_salt('bf')) from ins i;
+    get diagnostics v_fix = row_count;
+
+    if v_fix <> array_length(v_fixed_slots, 1) then
+      -- スロットの日付を変えたのに固定枠の日時を直し忘れた場合にここへ来る。
+      raise warning '固定枠が % 件しか入らなかった（想定 % 件）',
+                    v_fix, array_length(v_fixed_slots, 1);
+    end if;
+  end if;
+
+  return format('予約 %s件 / 退避表 %s件 / 台帳 %s件 を削除、固定枠 %s件 を投入',
+                v_res, v_del, v_led, v_fix);
 end;
 $$;
 

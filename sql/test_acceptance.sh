@@ -36,7 +36,8 @@ echo "== 基準2/13/14: 枠数上限（1セッション2枠）と正規化とセ
 $PSQL -c "delete from reservations;" >/dev/null
 a=$(call "select create_reservation(1::smallint,'2026-09-02 22:00+09'::timestamptz,'Aチーム','1111');")
 b=$(call "select create_reservation(2::smallint,'2026-09-03 01:00+09'::timestamptz,'Ａチーム','1111');")
-c=$(call "select create_reservation(3::smallint,'2026-09-03 03:00+09'::timestamptz,'aチーム','1111');")
+# 部屋3以降は左隣が埋まるまで開かない (FR-08)。見たいのは枠数上限なので部屋1を使う。
+c=$(call "select create_reservation(1::smallint,'2026-09-03 03:00+09'::timestamptz,'aチーム','1111');")
 [ ${#a} -eq 36 ] && ok "1枠目(Aチーム 9/2 22:00) 作成成功" || ng "1枠目" "$a"
 [ ${#b} -eq 36 ] && ok "2枠目(Ａチーム 9/3 01:00) 作成成功 = 全角Aが同一グループ扱い" || ng "2枠目" "$b"
 [ "$c" = "LIMIT_EXCEEDED" ] && ok "基準2/13/14: 3枠目が LIMIT_EXCEEDED（9/2 22:00 と 9/3 03:00 が同一セッション）" || ng "3枠目" "$c"
@@ -54,6 +55,16 @@ $PSQL -c "delete from reservations;" >/dev/null
 call "select create_reservation(1::smallint,'2026-09-02 22:00+09'::timestamptz,'Bチーム','2222');" >/dev/null
 r=$(call "select create_reservation(2::smallint,'2026-09-02 22:00+09'::timestamptz,'Bチーム','2222');")
 [ "$r" = "DUPLICATE_IN_SLOT" ] && ok "DUPLICATE_IN_SLOT（SLOT_TAKEN と正しく区別されている）" || ng "DUPLICATE_IN_SLOT" "$r"
+
+echo
+echo "== 基準25: 部屋の順次開放（最初の3部屋は常に開く）=="
+$PSQL -c "delete from reservations;" >/dev/null
+r=$(call "select create_reservation(4::smallint,'2026-09-02 22:00+09'::timestamptz,'順次1','5551');")
+[ "$r" = "ROOM_LOCKED" ] && ok "4番目の部屋は左隣が空なら ROOM_LOCKED" || ng "ROOM_LOCKED" "$r"
+r=$(call "select create_reservation(3::smallint,'2026-09-02 22:00+09'::timestamptz,'順次2','5552');")
+[ ${#r} -eq 36 ] && ok "3番目の部屋は左が空でも予約できる" || ng "3番目" "$r"
+r=$(call "select create_reservation(4::smallint,'2026-09-02 22:00+09'::timestamptz,'順次3','5553');")
+[ ${#r} -eq 36 ] && ok "左隣が埋まれば4番目が開く" || ng "4番目" "$r"
 
 echo
 echo "== 基準1: 同一セルへの同時予約は片方だけ成功 =="
@@ -103,7 +114,9 @@ r=$(call "select cancel_reservation('$id'::uuid,'6666');")
 echo
 echo "== 基準5/6: anon の直接書き込みがデータを変更できない =="
 $PSQL -c "delete from reservations;" >/dev/null
-call "select create_reservation(3::smallint,'$FUT'::timestamptz,'RLS試験','7777');" >/dev/null
+# 部屋3以降は左隣が埋まるまで開かない (FR-08)。ここで見たいのは RLS なので
+# 常に開いている部屋1を使う。
+call "select create_reservation(1::smallint,'$FUT'::timestamptz,'RLS試験','7777');" >/dev/null
 before=$($PSQL -c "select count(*) from reservations;")
 # DELETE / UPDATE は RLS にポリシーが無い場合エラーにならず「0行」で弾かれる。
 # PostgREST 経由では 204 が返るため、検査すべきはデータが変わらないこと。

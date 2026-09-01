@@ -288,10 +288,10 @@ function renderGrid() {
       var res = byCell[rm.id + '@' + slot.ms];
       var isPast = slot.ms <= now;
       var isLocked = (slot.ms - CANCEL_CUTOFF_MS) <= now;
-      // 左から順に埋めてもらう (FR-08)。3列目以降は、同じ枠で左隣の部屋が
-      // 予約されるまで開かない。1・2列目は常に開いている。
+      // 左から順に埋めてもらう (FR-08)。4列目以降は、同じ枠で左隣の部屋が
+      // 予約されるまで開かない。1〜3列目は常に開いている。
       // rooms は sort_order 順に取得しているので、添字がそのまま並び順になる。
-      var isBlocked = idx >= 2 && !byCell[rooms[idx - 1].id + '@' + slot.ms];
+      var isBlocked = idx >= 3 && !byCell[rooms[idx - 1].id + '@' + slot.ms];
       var btn = el('button');
       btn.type = 'button';
 
@@ -518,10 +518,115 @@ function tick() {
   refresh().then(schedulePoll, schedulePoll);
 }
 
+// --- スタジオの機材 (§17) --------------------------------------------
+// 予約の整合性には一切関わらない静的な案内なので、DB ではなくここに置く。
+// 機材が入れ替わったらこの配列だけを直せばよい。
+// rooms.name とは独立している（部屋名を変えてもここは追随しなくてよい）。
+var GEAR = [
+  { room: 'B2', size: '7m × 4.5m', items: [
+    ['ギターアンプ', 'Roland JC120'],
+    ['ギターアンプ', 'Marshall JCM2000 DSL50 + 1936'],
+    ['ベースアンプ', 'GALLIEN-KRUEGER 1001RB II + 410MBE II'],
+    ['ドラム',       'Pearl VISION VBL'],
+    ['ミキサー',     'MACKIE ProFX12'],
+    ['スピーカー',   'RCF Art712-A Mk2 ×2']
+  ] },
+  { room: 'D1', size: '5.5m × 4.5m', items: [
+    ['ギターアンプ', 'Roland JC120'],
+    ['ギターアンプ', 'Marshall JCM2000 DSL50 + 1936'],
+    ['ベースアンプ', 'Hartke HA2500 + VX410'],
+    ['ドラム',       'Pearl VISION VBL'],
+    ['ミキサー',     'MACKIE ProFX12'],
+    ['スピーカー',   'dB Technologies OPERA12']
+  ] },
+  { room: 'D2', size: '5.5m × 4.5m', items: [
+    ['ギターアンプ', 'Roland JC120'],
+    ['ギターアンプ', 'Marshall JCM2000 TSL60 + 1936'],
+    ['ベースアンプ', 'Hartke HA2500 + VX410'],
+    ['ドラム',       'Pearl Prestige Series'],
+    ['ミキサー',     'MACKIE ProFX12'],
+    ['スピーカー',   'JBL EON15 ×2']
+  ] },
+  { room: 'D3', size: '5.5m × 5.5m', items: [
+    ['ギターアンプ', 'Roland JC120'],
+    ['ギターアンプ', 'Marshall JCM900 2100SLX + 1936'],
+    ['ベースアンプ', 'Hartke HA3500 + 410XL'],
+    ['ドラム',       'Pearl VISION VBL'],
+    ['ミキサー',     'MACKIE ProFX12'],
+    ['スピーカー',   'RCF Art712-A Mk2 ×2']
+  ] },
+  { room: 'E1', size: '5.5m × 4m', items: [
+    ['ギターアンプ', 'Roland JC120'],
+    ['ギターアンプ', 'Marshall JCM2000 DSL50 + 1936'],
+    ['ベースアンプ', 'Hartke HA2500 + VX410'],
+    ['ドラム',       'Pearl Prestige Series'],
+    ['ミキサー',     'MACKIE DFX12'],
+    ['スピーカー',   'JBL EON15 ×2']
+  ] },
+  { room: 'E2', size: '5.5m × 4m', items: [
+    ['ギターアンプ', 'Roland JC120'],
+    ['ギターアンプ', 'Marshall JCM900 2100SLX + 1936'],
+    ['ベースアンプ', 'Hartke HA2500 + 410XL'],
+    ['ドラム',       'Pearl Prestige Series'],
+    ['ミキサー',     'MACKIE DFX12'],
+    ['スピーカー',   'JBL EON15 ×2']
+  ] },
+  { room: 'E3', size: '5.5m × 4m', items: [
+    ['ギターアンプ', 'Roland JC120'],
+    ['ギターアンプ', 'Marshall JCM2000 TSL60 + 1936'],
+    ['ベースアンプ', 'Hartke HA2500 + VX410'],
+    ['ドラム',       'Pearl VISION VBL'],
+    ['ミキサー',     'MACKIE ProFX12'],
+    ['スピーカー',   'JBL EON15 ×2']
+  ] }
+];
+
+var gearRoom = GEAR.length ? GEAR[0].room : null;
+
+function gearByRoom(name) {
+  for (var i = 0; i < GEAR.length; i++) { if (GEAR[i].room === name) return GEAR[i]; }
+  return null;
+}
+
+function renderGear() {
+  var tabs = $('gearTabs');
+  clear(tabs);
+  GEAR.forEach(function (g) {
+    var b = el('button', g.room === gearRoom ? 'gear-tab on' : 'gear-tab', g.room);
+    b.type = 'button';
+    b.addEventListener('click', function () { gearRoom = g.room; renderGear(); });
+    tabs.appendChild(b);
+  });
+
+  var body = $('gearBody');
+  clear(body);
+  var g = gearByRoom(gearRoom);
+  if (!g) return;
+
+  var card = el('div', 'gear-card');
+  var head = el('div', 'gear-head');
+  head.appendChild(el('span', 'gear-room', g.room));
+  head.appendChild(el('span', 'gear-size', g.size));
+  card.appendChild(head);
+
+  var list = el('dl', 'gear-list');
+  g.items.forEach(function (row) {
+    list.appendChild(el('dt', '', row[0]));
+    list.appendChild(el('dd', '', row[1]));
+  });
+  card.appendChild(list);
+  body.appendChild(card);
+}
+
+
 // --- 起動 -----------------------------------------------------------
 function boot() {
   $('campName').textContent = C.CAMP_NAME || '合宿 部屋予約';
   document.title = C.CAMP_NAME || '合宿 部屋予約';
+
+  // 機材の一覧は通信に依存しない。設定不備や通信断で下の return に入っても
+  // 表示は残したいので、いちばん先に描いておく。
+  renderGear();
 
   if (!C.SUPABASE_URL || C.SUPABASE_URL.indexOf('YOUR-PROJECT-REF') !== -1) {
     $('grid').appendChild(el('p', 'empty',
